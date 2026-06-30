@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coupling-sources"
+version = "0.1.0"
+authors = [
+    {name = "Hicham DAHMOU"}
+]
+requires-python = ">=3.11"
+dependencies = [
+  "arviz[all]>=0.10.0",
+  "bokeh>=3.9.1",
+  "dask[distributed]>=2026.6.0",
+  "graphviz>=0.21",
+  "ipykernel>=7.3.0",
+  "ipywidgets>=8.1.8",
+  "jax",
+  "matplotlib",
+  "numpy",
+  "numpyro",
+  "pandas",
+  "scienceplots>=2.2.2",
+  "seaborn",
+  "zarr>=3.1.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["coupling_sources*"]

@@ -1,0 +1,8 @@
+{
+  "machines": [
+    {
+      "machine_label": "local",
+      "max_concurrent_fits": 6
+    }
+  ]
+}

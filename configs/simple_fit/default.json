@@ -1,0 +1,40 @@
+{
+  "job": {
+    "artifacts_root": "artifacts",
+    "diagnostic_prior_seed": 102,
+    "diagnostic_prior_draws": 100
+  },
+  "stimuli": {
+    "seed": 101,
+    "n_sources": 4,
+    "n_rounds": 8,
+    "n_trials_full": 28,
+    "n_trials_partial": 12,
+    "sigma": 0.55,
+    "lam": 0.8,
+    "coupled_sources": [
+      0,
+      1
+    ]
+  },
+  "simulation": {
+    "seed": 201,
+    "participant_parameters": {
+      "alpha": 0.2,
+      "gamma": 0.8,
+      "kappa_p": 16.0,
+      "kappa_a": 4.0
+    }
+  },
+  "mcmc": {
+    "seed": 103,
+    "num_warmup": 300,
+    "num_samples": 600,
+    "num_chains": 1,
+    "chain_method": "parallel",
+    "target_accept_prob": 0.85,
+    "max_tree_depth": 10,
+    "host_device_count": null,
+    "progress_bar": false
+  }
+}
