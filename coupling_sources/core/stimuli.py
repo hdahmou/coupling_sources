@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 
-from coupling_sources.utils.shapes import source_round_to_round_source
+from coupling_sources.core.parameters.stimuli import StimuliParams
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,7 @@ class StimulusBatch:
     covariance: jax.Array
 
 
-def stimulus_covariance(
+def _stimulus_covariance(
     n_sources: int, sigma: float | jax.Array, lam: float | jax.Array, coupled: tuple[int, int]
 ) -> jax.Array:
     corr = jnp.eye(n_sources)
@@ -24,7 +24,7 @@ def stimulus_covariance(
     return sigma**2 * corr
 
 
-def hide_random_source_round(
+def _hide_random_source_round(
     key: jax.Array,
     source_choices: jax.Array,
     n_trials_full: int,
@@ -46,16 +46,19 @@ def hide_random_source_round(
     return source_choices.at[hidden_idx, trial_idx].set(hidden_value), hidden_source
 
 
-def hide_random_sources(
+def _hide_random_sources(
     key: jax.Array,
     source_choices: jax.Array,
     n_trials_full: int,
     n_trials_partial: int,
 ) -> tuple[jax.Array, jax.Array]:
-    choices_by_round = source_round_to_round_source(source_choices)
+    source_choices = jnp.asarray(source_choices)
+    if source_choices.ndim != 3:
+        raise ValueError("source_choices must have shape (source, round, time)")
+    choices_by_round = jnp.swapaxes(source_choices, 0, 1)
     keys = jax.random.split(key, choices_by_round.shape[0])
     masked_by_round, hidden_source = jax.vmap(
-        lambda subkey, choices_i: hide_random_source_round(
+        lambda subkey, choices_i: _hide_random_source_round(
             subkey, choices_i, n_trials_full, n_trials_partial
         )
     )(keys, choices_by_round)
@@ -77,13 +80,13 @@ def generate_stimuli(
 
     n_trials = n_trials_full + n_trials_partial
     key_theta, key_error, key_hide = jax.random.split(key, 3)
-    cov = stimulus_covariance(n_sources, sigma, lam, coupled)
+    cov = _stimulus_covariance(n_sources, sigma, lam, coupled)
     cov_root = jnp.linalg.cholesky(cov)
     truth = jax.random.uniform(key_theta, (n_rounds, n_trials), minval=0.0, maxval=2 * jnp.pi)
     error = jax.random.normal(key_error, (n_rounds, n_trials, n_sources)) @ cov_root.T
     reports = (truth[..., None] + error) % (2 * jnp.pi)
     complete_source_choices = jnp.moveaxis(reports, -1, 0)
-    source_choices, hidden_source = hide_random_sources(
+    source_choices, hidden_source = _hide_random_sources(
         key_hide,
         complete_source_choices,
         n_trials_full=n_trials_full,
@@ -95,4 +98,17 @@ def generate_stimuli(
         hidden_source=hidden_source,
         complete_source_choices=complete_source_choices,
         covariance=cov,
+    )
+
+
+def generate_stimulus(params: StimuliParams) -> StimulusBatch:
+    return generate_stimuli(
+        jax.random.PRNGKey(params.seed),
+        n_rounds=params.n_rounds,
+        n_trials_full=params.n_trials_full,
+        n_trials_partial=params.n_trials_partial,
+        n_sources=params.n_sources,
+        sigma=params.sigma,
+        lam=params.lam,
+        coupled=params.coupled_sources,
     )

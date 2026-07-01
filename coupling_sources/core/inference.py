@@ -1,44 +1,64 @@
 from __future__ import annotations
 
-import argparse
 import os
 import re
-import sys
-from collections.abc import Sequence
 from contextlib import contextmanager
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import numpyro.diagnostics as diagnostics
+import numpyro
 import numpyro.infer.mcmc as numpyro_mcmc
 import numpyro.util as numpyro_util
+import pandas as pd
 
-from coupling_sources.inference import fit_mcmc
-from coupling_sources.parameters.mcmc import MCMCParams
-from coupling_sources.parameters.simulation import SimParams
-from artifacts import read_simulation_zarr, write_posterior_zarr
-from coupling_sources.utils.posterior import (
-    extract_parameter_samples,
+from coupling_sources.core.model import choice_model
+from coupling_sources.core.parameters.mcmc import MCMCParams
+from coupling_sources.core.parameters.simulation import SimParams
+from coupling_sources.core.simulation import SimulationArtifact
+from coupling_sources.core.summarize_posterior import (
     parameter_values,
-    posterior_frame,
     summarize_posterior,
 )
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fit one posterior artifact from one simulation.")
-    parser.add_argument("--simulation", type=Path, required=True, help="Simulation Zarr directory.")
-    MCMCParams.add_arguments(parser)
-    parser.add_argument("--host-device-count", type=int, default=None)
-    parser.add_argument("--progress", action="store_true")
-    parser.add_argument("--progress-label", default=None)
-    parser.add_argument("--output", type=Path, required=True, help="Output Zarr directory.")
-    return parser.parse_args(argv)
+def fit_mcmc(
+    key: jax.Array,
+    choices: jax.Array,
+    source_choices: jax.Array,
+    hidden_source: jax.Array,
+    num_warmup: int = 300,
+    num_samples: int = 600,
+    num_chains: int = 1,
+    chain_method: str = "parallel",
+    target_accept_prob: float = 0.85,
+    max_tree_depth: int = 10,
+    progress_bar: bool = False,
+) -> numpyro.infer.MCMC:
+    data = {
+        "choices": choices,
+        "source_choices": source_choices,
+        "hidden_source": hidden_source,
+    }
+    kernel = numpyro.infer.NUTS(
+        choice_model,
+        target_accept_prob=target_accept_prob,
+        max_tree_depth=max_tree_depth,
+    )
+    mcmc = numpyro.infer.MCMC(
+        kernel,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=num_chains,
+        chain_method=chain_method,
+        progress_bar=progress_bar,
+    )
+    mcmc.run(key, data, None, extra_fields=("diverging",))
+    return mcmc
 
 
-class LabeledTqdm:
+class _LabeledTqdm:
     def __init__(self, bar: object, label: str):
         self.bar = bar
         self.label = label
@@ -53,7 +73,7 @@ class LabeledTqdm:
 
 
 @contextmanager
-def labeled_progress_bar(label: str | None):
+def _labeled_progress_bar(label: str | None):
     if label is None:
         yield
         return
@@ -74,8 +94,8 @@ def labeled_progress_bar(label: str | None):
         kwargs["progbar_desc"] = progbar_desc
         return original_fori_collect(*args, **kwargs)
 
-    def tqdm_auto_with_label(*args: object, **kwargs: object) -> LabeledTqdm:
-        return LabeledTqdm(original_tqdm_auto(*args, **kwargs), label)
+    def tqdm_auto_with_label(*args: object, **kwargs: object) -> _LabeledTqdm:
+        return _LabeledTqdm(original_tqdm_auto(*args, **kwargs), label)
 
     numpyro_mcmc.fori_collect = fori_collect_with_label
     numpyro_util.tqdm_auto = tqdm_auto_with_label
@@ -86,7 +106,7 @@ def labeled_progress_bar(label: str | None):
         numpyro_util.tqdm_auto = original_tqdm_auto
 
 
-def configure_parallel_chains(
+def _configure_parallel_chains(
     *, num_chains: int, chain_method: str, host_device_count: int | None = None
 ) -> None:
     effective = host_device_count
@@ -104,10 +124,11 @@ def configure_parallel_chains(
     )
 
 
-def mcmc_diagnostics(mcmc: object) -> dict[str, object]:
+def _mcmc_diagnostics(mcmc: object) -> dict[str, object]:
     grouped_samples = mcmc.get_samples(group_by_chain=True)
+    parameter_names = SimParams.names()
     parameter_summary = diagnostics.summary(
-        extract_parameter_samples(grouped_samples),
+        {name: grouped_samples[name] for name in parameter_names},
         group_by_chain=True,
     )
     extra_fields = mcmc.get_extra_fields(group_by_chain=True)
@@ -130,25 +151,24 @@ def mcmc_diagnostics(mcmc: object) -> dict[str, object]:
 
 def fit_posterior(
     *,
-    simulation: dict[str, object],
+    simulation: SimulationArtifact,
     params: MCMCParams,
     host_device_count: int | None,
     progress_bar: bool,
     progress_label: str | None = None,
 ) -> dict[str, object]:
-    configure_parallel_chains(
+    _configure_parallel_chains(
         num_chains=params.num_chains,
         chain_method=params.chain_method,
         host_device_count=host_device_count,
     )
 
-    data = simulation["data"]
-    choices = jnp.asarray(data["choices"])
-    source_choices = jnp.asarray(data["source_choices"])
-    hidden_source = jnp.asarray(data["hidden_source"])
-    true_params = SimParams.from_mapping(simulation["participant_parameters"])
+    choices = jnp.asarray(simulation.choices)
+    source_choices = jnp.asarray(simulation.source_choices)
+    hidden_source = jnp.asarray(simulation.hidden_source)
+    true_params = simulation.participant_parameters
 
-    with labeled_progress_bar(progress_label if progress_bar else None):
+    with _labeled_progress_bar(progress_label if progress_bar else None):
         mcmc = fit_mcmc(
             jax.random.PRNGKey(params.seed),
             choices,
@@ -164,39 +184,15 @@ def fit_posterior(
         )
     flat_samples = mcmc.get_samples(group_by_chain=False)
     chain_samples = mcmc.get_samples(group_by_chain=True)
-    summary = summarize_posterior(posterior_frame(flat_samples), parameter_values(true_params))
+    parameter_names = SimParams.names()
+    summary = summarize_posterior(
+        pd.DataFrame({name: np.asarray(flat_samples[name]) for name in parameter_names}),
+        parameter_values(true_params),
+    )
     summary.index.name = "parameter"
     return {
         "chain_method": mcmc.chain_method,
-        "diagnostics": mcmc_diagnostics(mcmc),
-        "samples": extract_parameter_samples(chain_samples),
+        "diagnostics": _mcmc_diagnostics(mcmc),
+        "samples": {name: chain_samples[name] for name in parameter_names},
         "summary": summary,
     }
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv)
-    params = MCMCParams.from_args(args)
-    posterior = fit_posterior(
-        simulation=read_simulation_zarr(args.simulation),
-        params=params,
-        host_device_count=args.host_device_count,
-        progress_bar=args.progress,
-        progress_label=args.progress_label,
-    )
-    write_posterior_zarr(
-        args.output,
-        diagnostics=posterior["diagnostics"],
-        samples=posterior["samples"],
-        summary=posterior["summary"],
-    )
-    print(
-        f"posterior {args.output}: "
-        f"chain_method={posterior['chain_method']} samples={params.num_samples}",
-        file=sys.stderr,
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

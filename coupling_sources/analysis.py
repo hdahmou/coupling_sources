@@ -11,16 +11,15 @@ import seaborn as sns
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from coupling_sources.simulator import SimulationResult, simulate_choices
-from coupling_sources.stimuli import generate_stimuli
-from coupling_sources.utils.angles import circular_difference_deg, optimal_weights
-from coupling_sources.utils.dynamics import response_flow
-from coupling_sources.utils.posterior import (
+from coupling_sources.core.parameters.simulation import SimParams
+from coupling_sources.core.response import ResponseTrace, compute_response_trace
+from coupling_sources.core.summarize_posterior import (
     parameter_values,
-    posterior_frame,
     summarize_posterior as posterior_summary,
 )
-from coupling_sources.parameters.simulation import SimParams
+from coupling_sources.core.simulation import SimulationResult, simulate_choices
+from coupling_sources.core.stimuli import generate_stimuli
+from coupling_sources.utils.angles import circular_difference_deg, optimal_weights
 
 
 @dataclass(frozen=True)
@@ -33,9 +32,9 @@ class EffectSpec:
 
 SOURCE_COLORS = ("#E69F00", "#56B4E9", "#009E73", "#A710DE")
 SUMMARY_STYLES = {
-    "truth": dict(color="black", radius=0.96, lw=2.2, linestyle="-"),
-    "equal_mean": dict(color="#0072B2", radius=0.84, lw=1.8, linestyle="--"),
-    "optimal_mean": dict(color="#D55E00", radius=0.90, lw=1.8, linestyle="-."),
+    "truth": {"color": "black", "radius": 0.96, "lw": 2.2, "linestyle": "-"},
+    "equal_mean": {"color": "#0072B2", "radius": 0.84, "lw": 1.8, "linestyle": "--"},
+    "optimal_mean": {"color": "#D55E00", "radius": 0.90, "lw": 1.8, "linestyle": "-."},
 }
 
 
@@ -91,19 +90,19 @@ def plot_stimulus_circles(
                 "",
                 xy=(np.deg2rad(row[source]), 0.66),
                 xytext=(np.deg2rad(row[source]), 0.0),
-                arrowprops=dict(arrowstyle="-|>", lw=1.5, color=source_colors[source]),
+                arrowprops={"arrowstyle": "-|>", "lw": 1.5, "color": source_colors[source]},
             )
         for column, style in SUMMARY_STYLES.items():
             ax.annotate(
                 "",
                 xy=(np.deg2rad(row[column]), style["radius"]),
                 xytext=(np.deg2rad(row[column]), 0.0),
-                arrowprops=dict(
-                    arrowstyle="-|>",
-                    lw=style["lw"],
-                    color=style["color"],
-                    linestyle=style["linestyle"],
-                ),
+                arrowprops={
+                    "arrowstyle": "-|>",
+                    "lw": style["lw"],
+                    "color": style["color"],
+                    "linestyle": style["linestyle"],
+                },
             )
 
     handles = [
@@ -141,12 +140,12 @@ def generate_effect_reports(
     return jnp.moveaxis(batch.source_choices, 0, -1)
 
 
-def non_coupled_pair_mask(n_sources: int, coupled: tuple[int, int]) -> jax.Array:
+def _non_coupled_pair_mask(n_sources: int, coupled: tuple[int, int]) -> jax.Array:
     pair_mask = jnp.triu(jnp.ones((n_sources, n_sources), dtype=bool), k=1)
     return pair_mask.at[tuple(sorted(coupled))].set(False).astype(float)
 
 
-def agreement_targets(
+def _agreement_targets(
     reports: jax.Array,
     kappa_a: float | jax.Array,
     n_sources: int,
@@ -154,7 +153,7 @@ def agreement_targets(
 ) -> tuple[jax.Array, jax.Array]:
     distance = reports[..., :, None] - reports[..., None, :]
     agreement = jnp.exp(jnp.asarray(kappa_a) * (jnp.cos(distance) - 1.0))
-    non_coupled_mask = non_coupled_pair_mask(n_sources, coupled)
+    non_coupled_mask = _non_coupled_pair_mask(n_sources, coupled)
     non_coupled_agreement = (
         jnp.sum(agreement * non_coupled_mask, axis=(-2, -1))
         / jnp.sum(non_coupled_mask)
@@ -165,20 +164,20 @@ def agreement_targets(
     )
 
 
-def _effect_flow(reports: jax.Array, params: SimParams) -> dict[str, jax.Array]:
+def _effect_flow(reports: jax.Array, params: SimParams) -> ResponseTrace:
     source_choices = jnp.moveaxis(reports, -1, 0)
     hidden_source = jnp.full(reports.shape[:2], jnp.nan)
-    return response_flow(params, source_choices, hidden_source)
+    return compute_response_trace(params, source_choices, hidden_source)
 
 
-def simulate_agreement_score_matrices(
+def _simulate_agreement_score_matrices(
     reports: jax.Array,
     params: SimParams,
     n_sources: int,
     coupled: tuple[int, int],
 ) -> tuple[jax.Array, jax.Array]:
-    scores = _effect_flow(reports, params)["post_update_agreement_scores"]
-    non_coupled_mask = non_coupled_pair_mask(n_sources, coupled)
+    scores = _effect_flow(reports, params).post_update_agreement_scores
+    non_coupled_mask = _non_coupled_pair_mask(n_sources, coupled)
     non_coupled_scores = (
         jnp.sum(scores * non_coupled_mask, axis=(-2, -1))
         / jnp.sum(non_coupled_mask)
@@ -186,7 +185,7 @@ def simulate_agreement_score_matrices(
     return scores[..., coupled[0], coupled[1]], non_coupled_scores
 
 
-def expected_weight_target(
+def _expected_weight_target(
     gamma: float | jax.Array,
     coupled_agreement: jax.Array,
     non_coupled_agreement: jax.Array,
@@ -202,13 +201,13 @@ def expected_weight_target(
     return jnp.mean(weights[coupled_idx]), jnp.mean(weights[independent_idx])
 
 
-def simulate_weight_matrices(
+def _simulate_weight_matrices(
     reports: jax.Array,
     params: SimParams,
     n_sources: int,
     coupled: tuple[int, int],
 ) -> tuple[jax.Array, jax.Array]:
-    weights = _effect_flow(reports, params)["source_weights"]
+    weights = _effect_flow(reports, params).source_weights
     coupled_idx = jnp.asarray(coupled)
     independent_idx = jnp.asarray([i for i in range(n_sources) if i not in coupled])
     return (
@@ -217,7 +216,7 @@ def simulate_weight_matrices(
     )
 
 
-def matrix_frame(matrix: jax.Array, sweep: str, panel: str) -> pd.DataFrame:
+def _matrix_frame(matrix: jax.Array, sweep: str, panel: str) -> pd.DataFrame:
     values = np.asarray(matrix)
     frame = pd.DataFrame(values, columns=np.arange(1, values.shape[1] + 1))
     frame["run"] = np.arange(values.shape[0])
@@ -232,19 +231,19 @@ def matrix_frame(matrix: jax.Array, sweep: str, panel: str) -> pd.DataFrame:
     return long
 
 
-def agreement_score_frame(
+def _agreement_score_frame(
     reports: jax.Array,
     spec: EffectSpec,
     n_sources: int,
     coupled: tuple[int, int],
 ) -> pd.DataFrame:
-    coupled_matrix, non_coupled_matrix = simulate_agreement_score_matrices(
+    coupled_matrix, non_coupled_matrix = _simulate_agreement_score_matrices(
         reports, spec.params, n_sources, coupled
     )
     return pd.concat(
         [
-            matrix_frame(coupled_matrix, spec.label, "Coupled pair"),
-            matrix_frame(non_coupled_matrix, spec.label, "Non-coupled pairs"),
+            _matrix_frame(coupled_matrix, spec.label, "Coupled pair"),
+            _matrix_frame(non_coupled_matrix, spec.label, "Non-coupled pairs"),
         ],
         ignore_index=True,
     )
@@ -257,7 +256,7 @@ def agreement_sweep_frame(
     coupled: tuple[int, int],
 ) -> pd.DataFrame:
     return pd.concat(
-        [agreement_score_frame(reports, spec, n_sources, coupled) for spec in specs],
+        [_agreement_score_frame(reports, spec, n_sources, coupled) for spec in specs],
         ignore_index=True,
     )
 
@@ -268,7 +267,7 @@ def fixed_agreement_targets_frame(
     n_sources: int,
     coupled: tuple[int, int],
 ) -> pd.DataFrame:
-    coupled_target, non_coupled_target = agreement_targets(
+    coupled_target, non_coupled_target = _agreement_targets(
         reports, kappa_a, n_sources, coupled
     )
     return pd.DataFrame([
@@ -286,7 +285,7 @@ def kernel_targets_frame(
     rows = []
     for spec in specs:
         kappa_a = spec.params.kappa_a if spec.target_kappa_a is None else spec.target_kappa_a
-        targets = agreement_targets(reports, kappa_a, n_sources, coupled)
+        targets = _agreement_targets(reports, kappa_a, n_sources, coupled)
         rows.extend(
             {"panel": panel, "value": float(value), "color": spec.color}
             for panel, value in zip(("Coupled pair", "Non-coupled pairs"), targets)
@@ -294,19 +293,19 @@ def kernel_targets_frame(
     return pd.DataFrame(rows)
 
 
-def weight_frame(
+def _weight_frame(
     reports: jax.Array,
     spec: EffectSpec,
     n_sources: int,
     coupled: tuple[int, int],
 ) -> pd.DataFrame:
-    coupled_matrix, independent_matrix = simulate_weight_matrices(
+    coupled_matrix, independent_matrix = _simulate_weight_matrices(
         reports, spec.params, n_sources, coupled
     )
     return pd.concat(
         [
-            matrix_frame(coupled_matrix, spec.label, "Coupled sources"),
-            matrix_frame(independent_matrix, spec.label, "Independent sources"),
+            _matrix_frame(coupled_matrix, spec.label, "Coupled sources"),
+            _matrix_frame(independent_matrix, spec.label, "Independent sources"),
         ],
         ignore_index=True,
     )
@@ -319,7 +318,7 @@ def weight_sweep_frame(
     coupled: tuple[int, int],
 ) -> pd.DataFrame:
     return pd.concat(
-        [weight_frame(reports, spec, n_sources, coupled) for spec in specs],
+        [_weight_frame(reports, spec, n_sources, coupled) for spec in specs],
         ignore_index=True,
     )
 
@@ -331,7 +330,7 @@ def weight_targets_frame(
     coupled: tuple[int, int],
     kappa_a: float = 4.0,
 ) -> pd.DataFrame:
-    coupled_agreement, non_coupled_agreement = agreement_targets(
+    coupled_agreement, non_coupled_agreement = _agreement_targets(
         reports, kappa_a, n_sources, coupled
     )
     return pd.DataFrame([
@@ -339,7 +338,7 @@ def weight_targets_frame(
         for spec in specs
         for panel, value in zip(
             ("Coupled sources", "Independent sources"),
-            expected_weight_target(
+            _expected_weight_target(
                 spec.params.gamma,
                 coupled_agreement,
                 non_coupled_agreement,
@@ -354,7 +353,7 @@ def sweep_palette(specs: Sequence[EffectSpec]) -> dict[str, str]:
     return {spec.label: spec.color for spec in specs}
 
 
-def response_error_samples(
+def _response_error_samples(
     key: jax.Array,
     kappa_p: float,
     n_runs: int,
@@ -385,7 +384,7 @@ def response_error_frame(
         [
             pd.DataFrame({
                 "kappa_p": kappa_p,
-                "absolute_error_deg": response_error_samples(
+                "absolute_error_deg": _response_error_samples(
                     subkey, kappa_p, n_runs, source_choices, hidden_source, response_mu_deg
                 ),
             })
@@ -395,7 +394,7 @@ def response_error_frame(
     )
 
 
-def separated_label_positions(
+def _separated_label_positions(
     values: pd.Series, ylim: tuple[float, float], min_gap_fraction: float = 0.065
 ) -> np.ndarray:
     values_array = values.to_numpy(dtype=float)
@@ -465,7 +464,7 @@ def plot_effect_lines(
 
     for panel, ax in grid.axes_dict.items():
         panel_targets = targets[targets.panel == panel].reset_index(drop=True)
-        label_positions = separated_label_positions(panel_targets.value, ylim)
+        label_positions = _separated_label_positions(panel_targets.value, ylim)
         for row, label_y in zip(panel_targets.itertuples(index=False), label_positions):
             ax.axhline(row.value, color=row.color, lw=1.1, ls="--", zorder=1)
             ax.plot(
@@ -486,7 +485,7 @@ def plot_effect_lines(
                 va="center",
                 ha="left",
                 clip_on=False,
-                bbox=dict(facecolor="white", edgecolor="none", alpha=0.86, pad=0.8),
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.86, "pad": 0.8},
                 zorder=3,
             )
         ax.tick_params(labelsize=9)

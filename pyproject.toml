@@ -11,6 +11,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
   "arviz[all]>=0.10.0",
+  "asyncssh>=2.24.0",
   "bokeh>=3.9.1",
   "dask[distributed]>=2026.6.0",
   "graphviz>=0.21",
