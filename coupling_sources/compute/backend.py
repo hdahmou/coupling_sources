@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import getpass
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
-from distributed import Client, LocalCluster, as_completed
+from distributed import Client, LocalCluster, Nanny, as_completed
 from distributed.deploy.spec import SpecCluster
 from distributed.deploy.ssh import Scheduler as SSHScheduler
 from distributed.deploy.ssh import Worker as SSHWorker
@@ -18,30 +19,202 @@ DEFAULT_REMOTE_PYTHON = ".venv/bin/python"
 T = TypeVar("T")
 
 
-def _compute_machines(compute_config: dict[str, object]) -> list[dict[str, object]]:
-    machines = compute_config.get("machines")
-    if not isinstance(machines, list) or not machines:
-        raise ValueError("compute config must include at least one machine")
-    return machines
+def _split_host(value: object) -> tuple[str | None, str]:
+    host = str(value)
+    if "@" not in host:
+        return None, host
+    user, address = host.rsplit("@", 1)
+    return user or None, address
 
 
-def _machine_host(machine: dict[str, object]) -> str:
-    return str(machine["host"])
+def _object_mapping(value: object, name: str) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object")
+    return dict(value)
 
 
-def _is_local_host(host: str) -> bool:
-    return host in LOCAL_HOSTS
+@dataclass(frozen=True)
+class Machine:
+    host: str
+    username: str | None
+    max_concurrent_fits: int
+    threads_per_worker: int
+    project_path: Path | None
+    python: str | None
+    port: int | None
+    env: dict[str, object]
+    connect_options: dict[str, object]
+    worker_options: dict[str, object]
+
+    @classmethod
+    def from_mapping(
+        cls, values: Mapping[str, object], *, default_worker_count: int | None = None
+    ) -> "Machine":
+        if "host" not in values:
+            raise ValueError("machine entries must include host")
+
+        shorthand_user, host = _split_host(values["host"])
+        configured_user = values.get("username", values.get("user", shorthand_user))
+        max_concurrent_fits = int(values.get("max_concurrent_fits", default_worker_count or 0))
+        threads_per_worker = int(values.get("threads_per_worker", 1))
+        if max_concurrent_fits < 1:
+            raise ValueError(f"max_concurrent_fits must be positive for {host}")
+        if threads_per_worker < 1:
+            raise ValueError(f"threads_per_worker must be positive for {host}")
+
+        project_path = values.get("project_path")
+        port = values.get("port")
+        python = values.get("python")
+        return cls(
+            host=host,
+            username=None if configured_user is None else str(configured_user),
+            max_concurrent_fits=max_concurrent_fits,
+            threads_per_worker=threads_per_worker,
+            project_path=None if project_path is None else Path(str(project_path)),
+            python=None if python is None else str(python),
+            port=None if port is None else int(port),
+            env=_object_mapping(values.get("env"), "machine.env"),
+            connect_options=_object_mapping(
+                values.get("connect_options"), "machine.connect_options"
+            ),
+            worker_options=_object_mapping(values.get("worker_options"), "machine.worker_options"),
+        )
+
+    @property
+    def is_local(self) -> bool:
+        return self.host in LOCAL_HOSTS
+
+    def as_mapping(self) -> dict[str, object]:
+        values: dict[str, object] = {
+            "host": self.host,
+            "max_concurrent_fits": self.max_concurrent_fits,
+            "threads_per_worker": self.threads_per_worker,
+        }
+        if self.username is not None:
+            values["username"] = self.username
+        if self.project_path is not None:
+            values["project_path"] = str(self.project_path)
+        if self.python is not None:
+            values["python"] = self.python
+        if self.port is not None:
+            values["port"] = self.port
+        if self.env:
+            values["env"] = dict(self.env)
+        if self.connect_options:
+            values["connect_options"] = dict(self.connect_options)
+        if self.worker_options:
+            values["worker_options"] = dict(self.worker_options)
+        return values
+
+    def remote_project_path(self) -> Path:
+        if self.project_path is None:
+            raise ValueError(f"remote machine {self.host!r} must define project_path")
+        return self.project_path
+
+    def remote_python_path(self, default_python: str) -> str:
+        configured = self.python or default_python
+        python_path = Path(configured)
+        if python_path.is_absolute():
+            return str(python_path)
+        return str(self.remote_project_path() / python_path)
+
+    def ssh_connect_options(self, config: "ComputeConfig") -> dict[str, object]:
+        options = {**config.connect_options, **self.connect_options}
+        if self.username is not None:
+            options["username"] = self.username
+        if self.port is not None:
+            options["port"] = self.port
+        return options
+
+    def env_with(self, config: "ComputeConfig") -> dict[str, str]:
+        return {**_string_values(config.env), **_string_values(self.env)}
 
 
-def _uses_ssh_compute(compute_config: dict[str, object]) -> bool:
-    return any(
-        not _is_local_host(_machine_host(machine))
-        for machine in _compute_machines(compute_config)
-    )
+def _string_values(values: Mapping[str, object]) -> dict[str, str]:
+    return {str(key): str(value) for key, value in values.items()}
+
+
+@dataclass(frozen=True)
+class ComputeConfig:
+    machines: tuple[Machine, ...]
+    python: str
+    connect_options: dict[str, object]
+    env: dict[str, object]
+    worker_options: dict[str, object]
+    scheduler_options: dict[str, object]
+    scheduler: dict[str, object] | None
+    scheduler_host: str | None
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "ComputeConfig":
+        raw_machines = values.get("machines")
+        if not isinstance(raw_machines, list) or not raw_machines:
+            raise ValueError("compute config must include at least one machine")
+        if not all(isinstance(machine, dict) for machine in raw_machines):
+            raise ValueError("compute config machines must be objects")
+
+        machines = tuple(Machine.from_mapping(machine) for machine in raw_machines)
+        if sum(machine.is_local for machine in machines) > 1:
+            raise ValueError("compute config can include at most one local machine entry")
+
+        scheduler = values.get("scheduler")
+        return cls(
+            machines=machines,
+            python=str(values.get("python", values.get("remote_python", DEFAULT_REMOTE_PYTHON))),
+            connect_options=_object_mapping(values.get("connect_options"), "connect_options"),
+            env=_object_mapping(values.get("env"), "env"),
+            worker_options=_object_mapping(values.get("worker_options"), "worker_options"),
+            scheduler_options=_object_mapping(
+                values.get("scheduler_options"), "scheduler_options"
+            ),
+            scheduler=None if scheduler is None else _object_mapping(scheduler, "scheduler"),
+            scheduler_host=(
+                None if values.get("scheduler_host") is None else str(values["scheduler_host"])
+            ),
+        )
+
+    @property
+    def local_machine(self) -> Machine | None:
+        return next((machine for machine in self.machines if machine.is_local), None)
+
+    @property
+    def remote_machines(self) -> tuple[Machine, ...]:
+        return tuple(machine for machine in self.machines if not machine.is_local)
+
+    @property
+    def uses_ssh(self) -> bool:
+        return bool(self.remote_machines)
+
+    def scheduler_machine(self) -> Machine:
+        if self.scheduler is not None:
+            if "host" not in self.scheduler:
+                raise ValueError("scheduler must include host")
+            _, host = _split_host(self.scheduler["host"])
+            base = next((machine for machine in self.remote_machines if machine.host == host), None)
+            values = {"host": self.scheduler["host"], **self.scheduler}
+            if base is not None:
+                values = {**base.as_mapping(), **values}
+            machine = Machine.from_mapping(values, default_worker_count=1)
+            if machine.is_local:
+                raise ValueError("scheduler host must be a non-local machine")
+            return machine
+
+        if self.scheduler_host is not None:
+            _, host = _split_host(self.scheduler_host)
+            for machine in self.remote_machines:
+                if machine.host == host:
+                    return machine
+            raise ValueError(f"scheduler_host {host!r} is not listed in machines")
+
+        if not self.remote_machines:
+            raise ValueError("SSH compute requires at least one non-local machine")
+        return self.remote_machines[0]
 
 
 def add_prompted_ssh_password(compute_config: dict[str, object]) -> None:
-    if not _uses_ssh_compute(compute_config):
+    if not ComputeConfig.from_mapping(compute_config).uses_ssh:
         return
 
     options = compute_config.setdefault("connect_options", {})
@@ -50,61 +223,10 @@ def add_prompted_ssh_password(compute_config: dict[str, object]) -> None:
     options["password"] = getpass.getpass("SSH password: ")
 
 
-def _machine_worker_count(machine: dict[str, object]) -> int:
-    count = int(machine["max_concurrent_fits"])
-    if count < 1:
-        raise ValueError(f"max_concurrent_fits must be positive for {_machine_host(machine)}")
-    return count
-
-
-def _machine_project_path(machine: dict[str, object]) -> Path:
-    project_path = machine.get("project_path")
-    if project_path is None:
-        raise ValueError(f"remote machine {_machine_host(machine)!r} must define project_path")
-    return Path(str(project_path))
-
-
-def _remote_python_path(machine: dict[str, object], compute_config: dict[str, object]) -> str:
-    configured = machine.get(
-        "python",
-        compute_config.get("python", compute_config.get("remote_python", DEFAULT_REMOTE_PYTHON)),
-    )
-    python_path = Path(str(configured))
-    if python_path.is_absolute():
-        return str(python_path)
-    return str(_machine_project_path(machine) / python_path)
-
-
-def _connect_options(
-    machine: dict[str, object], compute_config: dict[str, object]
-) -> dict[str, object]:
-    options: dict[str, object] = {}
-    global_options = compute_config.get("connect_options", {})
-    machine_options = machine.get("connect_options", {})
-    if isinstance(global_options, dict):
-        options.update(global_options)
-    if isinstance(machine_options, dict):
-        options.update(machine_options)
-    if "user" in machine:
-        options["username"] = machine["user"]
-    if "username" in machine:
-        options["username"] = machine["username"]
-    if "port" in machine:
-        options["port"] = int(machine["port"])
-    return options
-
-
-def _remote_worker_env(
-    machine: dict[str, object], compute_config: dict[str, object]
-) -> dict[str, str]:
-    project_path = _machine_project_path(machine)
+def _remote_worker_env(machine: Machine, config: ComputeConfig) -> dict[str, str]:
+    project_path = machine.remote_project_path()
     project_pythonpath = f"{project_path}:{project_path / 'scripts'}"
-    env: dict[str, str] = {}
-
-    for configured_env in (compute_config.get("env", {}), machine.get("env", {})):
-        if isinstance(configured_env, dict):
-            env.update({str(key): str(value) for key, value in configured_env.items()})
-
+    env = machine.env_with(config)
     configured_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         project_pythonpath
@@ -114,99 +236,109 @@ def _remote_worker_env(
     return env
 
 
-def _scheduler_machine_for(
-    machines: list[dict[str, object]], compute_config: dict[str, object]
+def _local_worker_env(machine: Machine, config: ComputeConfig, log_path: Path) -> dict[str, str]:
+    env = machine.env_with(config)
+    env["COUPLING_SOURCES_RUN_LOG"] = str(log_path)
+    return env
+
+
+def _merge_worker_options(
+    kwargs: dict[str, Any], machine: Machine, config: ComputeConfig
 ) -> dict[str, object]:
-    scheduler = compute_config.get("scheduler")
-    if isinstance(scheduler, dict):
-        host = str(scheduler["host"])
-        base = next((machine for machine in machines if _machine_host(machine) == host), {})
-        return {**base, **scheduler}
-
-    scheduler_host = compute_config.get("scheduler_host")
-    if scheduler_host is not None:
-        host = str(scheduler_host)
-        for machine in machines:
-            if _machine_host(machine) == host:
-                return machine
-        raise ValueError(f"scheduler_host {host!r} is not listed in machines")
-
-    return next(machine for machine in machines if not _is_local_host(_machine_host(machine)))
+    merged = dict(kwargs)
+    merged["env"] = dict(kwargs.get("env", {}))
+    for configured in (config.worker_options, machine.worker_options):
+        options = dict(configured)
+        env = options.pop("env", {})
+        if env is None:
+            env = {}
+        if not isinstance(env, dict):
+            raise ValueError("worker_options.env must be an object")
+        merged.update(options)
+        merged["env"].update(_string_values(env))
+    return merged
 
 
-def _ssh_worker_kwargs(
-    machine: dict[str, object], compute_config: dict[str, object]
+def _ssh_worker_kwargs(machine: Machine, config: ComputeConfig) -> dict[str, object]:
+    return _merge_worker_options(
+        {"nthreads": machine.threads_per_worker, "env": _remote_worker_env(machine, config)},
+        machine,
+        config,
+    )
+
+
+def _local_worker_kwargs(
+    machine: Machine, config: ComputeConfig, log_path: Path
 ) -> dict[str, object]:
-    kwargs: dict[str, Any] = {
-        "nthreads": int(machine.get("threads_per_worker", 1)),
-        "env": _remote_worker_env(machine, compute_config),
-    }
-    for configured in (compute_config.get("worker_options", {}), machine.get("worker_options", {})):
-        if isinstance(configured, dict):
-            configured = dict(configured)
-            configured_env = configured.pop("env", {})
-            kwargs.update(configured)
-            if isinstance(configured_env, dict):
-                kwargs["env"].update({str(key): str(value) for key, value in configured_env.items()})
-    return kwargs
+    return _merge_worker_options(
+        {
+            "nthreads": machine.threads_per_worker,
+            "env": _local_worker_env(machine, config, log_path),
+            "preload": [str(Path(__file__).with_name("dask_log_preload.py"))],
+        },
+        machine,
+        config,
+    )
 
 
-def _build_ssh_cluster(compute_config: dict[str, object]) -> SpecCluster:
-    machines = _compute_machines(compute_config)
-    local_machines = [machine for machine in machines if _is_local_host(_machine_host(machine))]
-    remote_machines = [machine for machine in machines if not _is_local_host(_machine_host(machine))]
-    if local_machines:
-        raise ValueError(
-            "local machines cannot be mixed with SSH machines; use an SSH-reachable "
-            "hostname for the local machine, or keep the config local-only"
-        )
+def _local_cluster_options(
+    machine: Machine, config: ComputeConfig, log_path: Path
+) -> dict[str, object]:
+    options = _local_worker_kwargs(machine, config, log_path)
+    options["threads_per_worker"] = options.pop("nthreads")
+    return options
 
-    scheduler_machine = _scheduler_machine_for(remote_machines, compute_config)
+
+def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
+    scheduler_machine = config.scheduler_machine()
     scheduler = {
         "cls": SSHScheduler,
         "options": {
-            "address": _machine_host(scheduler_machine),
-            "connect_options": _connect_options(scheduler_machine, compute_config),
-            "kwargs": dict(compute_config.get("scheduler_options", {})),
-            "remote_python": _remote_python_path(scheduler_machine, compute_config),
+            "address": scheduler_machine.host,
+            "connect_options": scheduler_machine.ssh_connect_options(config),
+            "kwargs": dict(config.scheduler_options),
+            "remote_python": scheduler_machine.remote_python_path(config.python),
         },
     }
 
     workers: dict[str, dict[str, object]] = {}
-    for machine in remote_machines:
-        host = _machine_host(machine)
-        for slot in range(_machine_worker_count(machine)):
-            workers[f"{host}-{slot}"] = {
+    for machine in config.remote_machines:
+        for slot in range(machine.max_concurrent_fits):
+            workers[f"{machine.host}-{slot}"] = {
                 "cls": SSHWorker,
                 "options": {
-                    "address": host,
-                    "connect_options": _connect_options(machine, compute_config),
-                    "kwargs": _ssh_worker_kwargs(machine, compute_config),
+                    "address": machine.host,
+                    "connect_options": machine.ssh_connect_options(config),
+                    "kwargs": _ssh_worker_kwargs(machine, config),
                     "worker_class": "distributed.Nanny",
-                    "remote_python": _remote_python_path(machine, compute_config),
+                    "remote_python": machine.remote_python_path(config.python),
                 },
+            }
+
+    local_machine = config.local_machine
+    if local_machine is not None:
+        for slot in range(local_machine.max_concurrent_fits):
+            workers[f"{local_machine.host}-{slot}"] = {
+                "cls": Nanny,
+                "options": _local_worker_kwargs(local_machine, config, log_path),
             }
 
     return SpecCluster(workers, scheduler, name="CouplingSourcesSSHCluster")
 
 
 @contextmanager
-def _compute_client(
-    compute_config: dict[str, object], log_path: Path
-) -> Iterator[Client]:
-    machines = _compute_machines(compute_config)
-    if all(_is_local_host(_machine_host(machine)) for machine in machines):
-        n_workers = sum(_machine_worker_count(machine) for machine in machines)
+def _compute_client(compute_config: dict[str, object], log_path: Path) -> Iterator[Client]:
+    config = ComputeConfig.from_mapping(compute_config)
+    local_machine = config.local_machine
+    if local_machine is not None and len(config.machines) == 1:
         with LocalCluster(
-            n_workers=n_workers,
-            threads_per_worker=1,
-            env={"COUPLING_SOURCES_RUN_LOG": str(log_path)},
-            preload=[str(Path(__file__).with_name("dask_log_preload.py"))],
+            n_workers=local_machine.max_concurrent_fits,
+            **_local_cluster_options(local_machine, config, log_path),
         ) as cluster, Client(cluster) as client:
             yield client
         return
 
-    with _build_ssh_cluster(compute_config) as cluster, Client(cluster) as client:
+    with _build_ssh_cluster(config, log_path) as cluster, Client(cluster) as client:
         yield client
 
 
@@ -217,9 +349,6 @@ def run_tasks(
     submissions: Iterable[tuple[T, dict[str, object]]],
 ) -> Iterator[tuple[T, object]]:
     with _compute_client(compute_config, log_path) as client:
-        futures = {
-            client.submit(task, **kwargs): metadata
-            for metadata, kwargs in submissions
-        }
+        futures = {client.submit(task, **kwargs): metadata for metadata, kwargs in submissions}
         for future in as_completed(futures):
             yield futures[future], future.result()
