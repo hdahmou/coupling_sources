@@ -50,6 +50,38 @@ def _append_run_log(log_path: Path):
             os.close(stderr_fd)
 
 
+def _xla_host_device_count(mcmc_config: dict[str, object]) -> int | None:
+    configured = mcmc_config.get("host_device_count")
+    if configured is not None:
+        count = int(configured)
+    elif mcmc_config.get("chain_method") == "parallel" and int(mcmc_config["num_chains"]) > 1:
+        count = int(mcmc_config["num_chains"])
+    else:
+        return None
+
+    if count < 1:
+        raise ValueError("host_device_count must be a positive integer")
+    return count
+
+
+def _set_worker_xla_host_device_count(
+    compute_config: dict[str, object], count: int | None
+) -> None:
+    if count is None:
+        return
+
+    env = compute_config.setdefault("env", {})
+    if not isinstance(env, dict):
+        raise ValueError("compute config env must be an object")
+
+    flags = re.sub(
+        r"--xla_force_host_platform_device_count=\S+", "", str(env.get("XLA_FLAGS", ""))
+    ).split()
+    env["XLA_FLAGS"] = " ".join(
+        [f"--xla_force_host_platform_device_count={count}", *flags]
+    )
+
+
 @dataclass(frozen=True)
 class PosteriorFit:
     output: Path
@@ -185,8 +217,9 @@ def run_parameter_recovery(
             simulation_config = config["simulation"]
             simulation_seed = simulation_config["seed"]
             mcmc_config = config["mcmc"]
+            host_device_count = _xla_host_device_count(mcmc_config)
+            _set_worker_xla_host_device_count(compute_config, host_device_count)
             mcmc_params = MCMCParams.from_mapping(mcmc_config)
-            host_device_count = mcmc_config["host_device_count"]
             progress_bar = mcmc_config["progress_bar"]
 
             prior_samples = sample_parameter_prior(diagnostic_prior_seed, diagnostic_prior_draws)

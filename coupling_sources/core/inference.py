@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import re
 from contextlib import contextmanager
 
 import jax
@@ -106,22 +104,21 @@ def _labeled_progress_bar(label: str | None):
         numpyro_util.tqdm_auto = original_tqdm_auto
 
 
-def _configure_parallel_chains(
+def _validate_parallel_chains(
     *, num_chains: int, chain_method: str, host_device_count: int | None = None
 ) -> None:
-    effective = host_device_count
-    if effective is None and chain_method == "parallel" and num_chains > 1:
-        effective = num_chains
-    if effective is None:
-        return
-    if effective < 1:
+    if host_device_count is not None and host_device_count < 1:
         raise ValueError("host_device_count must be a positive integer")
+    if chain_method != "parallel" or num_chains <= 1:
+        return
 
-    flags = os.environ.get("XLA_FLAGS", "")
-    flags = re.sub(r"--xla_force_host_platform_device_count=\S+", "", flags).split()
-    os.environ["XLA_FLAGS"] = " ".join(
-        [f"--xla_force_host_platform_device_count={effective}", *flags]
-    )
+    available = jax.local_device_count()
+    if available < num_chains:
+        raise RuntimeError(
+            f"parallel MCMC requested {num_chains} chains, but JAX sees only "
+            f"{available} local device(s). Configure host_device_count before workers "
+            "import JAX so chains do not run sequentially."
+        )
 
 
 def _mcmc_diagnostics(mcmc: object) -> dict[str, object]:
@@ -157,7 +154,7 @@ def fit_posterior(
     progress_bar: bool,
     progress_label: str | None = None,
 ) -> dict[str, object]:
-    _configure_parallel_chains(
+    _validate_parallel_chains(
         num_chains=params.num_chains,
         chain_method=params.chain_method,
         host_device_count=host_device_count,

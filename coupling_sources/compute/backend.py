@@ -260,11 +260,13 @@ def _merge_worker_options(
 
 
 def _ssh_worker_kwargs(machine: Machine, config: ComputeConfig) -> dict[str, object]:
-    return _merge_worker_options(
+    options = _merge_worker_options(
         {"nthreads": machine.threads_per_worker, "env": _remote_worker_env(machine, config)},
         machine,
         config,
     )
+    options["n_workers"] = machine.max_concurrent_fits
+    return options
 
 
 def _local_worker_kwargs(
@@ -302,18 +304,17 @@ def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
     }
 
     workers: dict[str, dict[str, object]] = {}
-    for machine in config.remote_machines:
-        for slot in range(machine.max_concurrent_fits):
-            workers[f"{machine.host}-{slot}"] = {
-                "cls": SSHWorker,
-                "options": {
-                    "address": machine.host,
-                    "connect_options": machine.ssh_connect_options(config),
-                    "kwargs": _ssh_worker_kwargs(machine, config),
-                    "worker_class": "distributed.Nanny",
-                    "remote_python": machine.remote_python_path(config.python),
-                },
-            }
+    for index, machine in enumerate(config.remote_machines):
+        workers[f"{machine.host}-{index}"] = {
+            "cls": SSHWorker,
+            "options": {
+                "address": machine.host,
+                "connect_options": machine.ssh_connect_options(config),
+                "kwargs": _ssh_worker_kwargs(machine, config),
+                "worker_class": "distributed.Nanny",
+                "remote_python": machine.remote_python_path(config.python),
+            },
+        }
 
     local_machine = config.local_machine
     if local_machine is not None:
