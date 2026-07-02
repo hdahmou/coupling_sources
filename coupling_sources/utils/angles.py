@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg as jsp_linalg
 
 
 def circular_mean(angles: jax.Array, weights: jax.Array) -> jax.Array:
@@ -18,5 +19,5 @@ def circular_difference_deg(a: jax.Array, b: jax.Array) -> jax.Array:
 
 
 def optimal_weights(cov: jax.Array) -> jax.Array:
-    raw = jnp.linalg.solve(cov, jnp.ones(cov.shape[0]))
+    raw = jsp_linalg.solve(cov, jnp.ones(cov.shape[0]), assume_a="sym")
     return raw / raw.sum()

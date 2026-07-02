@@ -64,6 +64,47 @@ def _update_agreement_scores(
     )
 
 
+def _round_response_mean(
+    params: SimParams, source_choices: jax.Array, hidden_source: jax.Array
+) -> jax.Array:
+    n_sources = source_choices.shape[0]
+
+    def step(
+        agreement_scores: jax.Array, trial: tuple[jax.Array, jax.Array]
+    ) -> tuple[jax.Array, jax.Array]:
+        trial_reports, trial_hidden_source = trial
+        reports = jnp.nan_to_num(trial_reports, nan=0.0)
+        visible_sources, hidden_index, is_probe = _visible_sources_for_trial(
+            trial_reports, trial_hidden_source
+        )
+        source_covariance = jnp.eye(n_sources) + params.gamma * agreement_scores
+
+        def hidden_response(_: None) -> jax.Array:
+            return _predict_hidden_report(
+                reports, source_covariance, visible_sources, hidden_index
+            )
+
+        def truth_response(_: None) -> jax.Array:
+            source_weights = optimal_weights(source_covariance)
+            return circular_mean(reports, source_weights * visible_sources)
+
+        response_mean = jax.lax.cond(
+            is_probe,
+            hidden_response,
+            truth_response,
+            operand=None,
+        )
+        updated_scores = _update_agreement_scores(
+            agreement_scores, reports, visible_sources, params
+        )
+        return updated_scores, response_mean
+
+    _, response_mean = jax.lax.scan(
+        step, jnp.zeros((n_sources, n_sources)), (source_choices.T, hidden_source)
+    )
+    return response_mean
+
+
 def _round_response_trace(
     params: SimParams, source_choices: jax.Array, hidden_source: jax.Array
 ) -> ResponseTrace:
@@ -81,10 +122,22 @@ def _round_response_trace(
         source_weights = optimal_weights(source_covariance)
 
         truth_mean = circular_mean(reports, source_weights * visible_sources)
-        hidden_mean = _predict_hidden_report(
-            reports, source_covariance, visible_sources, hidden_index
+
+        def hidden_response(_: None) -> tuple[jax.Array, jax.Array]:
+            hidden_mean = _predict_hidden_report(
+                reports, source_covariance, visible_sources, hidden_index
+            )
+            return hidden_mean, hidden_mean
+
+        def truth_response(_: None) -> tuple[jax.Array, jax.Array]:
+            return jnp.nan, truth_mean
+
+        hidden_mean, response_mean = jax.lax.cond(
+            is_probe,
+            hidden_response,
+            truth_response,
+            operand=None,
         )
-        response_mean = jnp.where(is_probe, hidden_mean, truth_mean)
         updated_scores = _update_agreement_scores(
             agreement_scores, reports, visible_sources, params
         )
@@ -132,6 +185,16 @@ def compute_response_trace(
 ) -> ResponseTrace:
     return jax.vmap(
         lambda round_choices, round_hidden: _round_response_trace(
+            params, round_choices, round_hidden
+        )
+    )(jnp.swapaxes(source_choices, 0, 1), hidden_source)
+
+
+def compute_response_mean(
+    params: SimParams, source_choices: jax.Array, hidden_source: jax.Array
+) -> jax.Array:
+    return jax.vmap(
+        lambda round_choices, round_hidden: _round_response_mean(
             params, round_choices, round_hidden
         )
     )(jnp.swapaxes(source_choices, 0, 1), hidden_source)

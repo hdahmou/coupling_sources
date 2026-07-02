@@ -27,6 +27,7 @@ from coupling_sources.utils.artifacts import (
     write_stimuli_zarr,
 )
 from coupling_sources.workflows.job_grid import build_run_grid, write_job_grid
+from distributed import print as dask_print
 
 
 @contextmanager
@@ -92,7 +93,7 @@ def _task_worker_log(job_id: str):
     log_dir = os.environ.get("COUPLING_SOURCES_WORKER_LOG_DIR")
     if log_dir is None:
         with nullcontext():
-            yield
+            yield None
         return
 
     log_path = Path(log_dir) / f"{_safe_log_name(job_id)}.log"
@@ -104,8 +105,9 @@ def _task_worker_log(job_id: str):
             os.dup2(log_file.fileno(), sys.stdout.fileno())
             os.dup2(log_file.fileno(), sys.stderr.fileno())
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                print(f"worker task log start: {job_id}", file=sys.stderr)
-                yield
+                dask_print(f"worker task log start: {job_id}", file=sys.stderr, flush=True)
+                dask_print(f"worker task log path: {log_path}", file=sys.stderr, flush=True)
+                yield log_path
         finally:
             sys.stdout.flush()
             sys.stderr.flush()
@@ -143,17 +145,31 @@ def _run_inference_job(
     progress_bar: bool,
     job_id: str,
 ) -> dict[str, object]:
-    with _task_worker_log(job_id):
-        print(f"fit start: {job_id}", file=sys.stderr)
-        posterior = fit_posterior(
-            simulation=simulation,
-            params=params,
-            host_device_count=host_device_count,
-            progress_bar=progress_bar,
-            progress_label=job_id,
-        )
-        print(f"fit done: {job_id}", file=sys.stderr)
-    return {"job_id": job_id, **posterior}
+    worker_host = os.environ.get("COUPLING_SOURCES_WORKER_HOST")
+    worker_log_path = None
+    with _task_worker_log(job_id) as task_log_path:
+        worker_log_path = task_log_path
+        dask_print(f"fit start: {job_id}", file=sys.stderr, flush=True)
+        try:
+            posterior = fit_posterior(
+                simulation=simulation,
+                params=params,
+                host_device_count=host_device_count,
+                progress_bar=progress_bar,
+                progress_label=job_id,
+            )
+        except Exception:
+            error = traceback.format_exc()
+            print(error, file=sys.stderr)
+            dask_print(error, file=sys.stderr, flush=True)
+            raise
+        dask_print(f"fit done: {job_id}", file=sys.stderr, flush=True)
+    return {
+        "job_id": job_id,
+        "worker_host": worker_host,
+        "worker_log_path": None if worker_log_path is None else str(worker_log_path),
+        **posterior,
+    }
 
 
 def _dispatch_posterior_fits(
@@ -172,7 +188,12 @@ def _dispatch_posterior_fits(
             diagnostics=posterior["diagnostics"],
             samples=posterior["samples"],
         )
-        print(f"fit complete: {posterior['job_id']}: {output}", file=sys.stderr)
+        log_detail = ""
+        if posterior.get("worker_host"):
+            log_detail += f" worker={posterior['worker_host']}"
+        if posterior.get("worker_log_path"):
+            log_detail += f" worker_log={posterior['worker_log_path']}"
+        print(f"fit complete: {posterior['job_id']}: {output}{log_detail}", file=sys.stderr)
 
 
 def _job_name_from_config(config_path: Path, started_at: datetime) -> str:

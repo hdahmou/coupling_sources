@@ -294,12 +294,14 @@ def _remote_worker_env(
         else f"{project_pythonpath}:{configured_pythonpath}"
     )
     env["COUPLING_SOURCES_WORKER_LOG_DIR"] = str(_remote_worker_log_dir(machine, log_path))
+    env["COUPLING_SOURCES_WORKER_HOST"] = machine.host
     return env
 
 
 def _local_worker_env(machine: Machine, config: ComputeConfig, log_path: Path) -> dict[str, str]:
     env = machine.env_with(config)
     env["COUPLING_SOURCES_RUN_LOG"] = str(log_path)
+    env["COUPLING_SOURCES_WORKER_HOST"] = machine.host
     return env
 
 
@@ -378,6 +380,10 @@ def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
 
     workers: dict[str, dict[str, object]] = {}
     for index, machine in enumerate(config.remote_worker_machines):
+        print(
+            f"remote worker log dir: {machine.host}: {_remote_worker_log_dir(machine, log_path)}",
+            file=sys.stderr,
+        )
         workers[f"{machine.host}-{index}"] = {
             "cls": SSHWorker,
             "options": {

@@ -28,6 +28,7 @@ def fit_mcmc(
     target_accept_prob: float = 0.85,
     max_tree_depth: int = 10,
     progress_bar: bool = False,
+    model_debug: bool = False,
 ) -> numpyro.infer.MCMC:
     data = {
         "choices": choices,
@@ -47,7 +48,7 @@ def fit_mcmc(
         chain_method=chain_method,
         progress_bar=progress_bar,
     )
-    mcmc.run(key, data, {"record_response_mean": False}, extra_fields=("diverging",))
+    mcmc.run(key, data, None, model_debug, extra_fields=("diverging",))
     return mcmc
 
 

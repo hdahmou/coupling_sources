@@ -37,7 +37,7 @@ http://127.0.0.1:8787/status
 
 Artifacts are written under `artifacts/<config_name>_<YYYY_MM_DD_HH_MM_SS>/`: `config.json`, `logs.log`, `prior.zarr`, `job_grid.csv`, and `jobs/job_000000/{stimuli,simulation,posterior}.zarr`.
 
-Remote worker stdout/stderr is written on each worker machine under `<project_path>/artifacts/<run_name>/worker_logs/<host>/`. Those logs include worker-side prints and NumPyro progress bars.
+Remote worker stdout/stderr is written on each active worker machine under `<project_path>/artifacts/<run_name>/worker_logs/<host>/`. Task milestones and exceptions are also forwarded into the local `logs.log`; full raw worker output, including progress-bar writes, stays in the remote task log. The local `logs.log` prints the exact remote log directory before submitting tasks and the exact task log path when a fit finishes. Hosts with `max_concurrent_fits: 0` do not run tasks, so they do not create worker task logs.
 
 ## SSH Compute Config
 
