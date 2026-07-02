@@ -21,6 +21,8 @@ uses a fixed localhost port:
   }
 
 The script opens reverse forwards from each SSH worker back to this machine.
+When tunnel mode is enabled, it also opens local forwards from this machine to
+each remote Dask worker/nanny port so the local scheduler can fetch results.
 For non-local scheduler_host values, it also opens local forwards to the remote
 scheduler host.
 
@@ -155,6 +157,87 @@ for target in "${raw_worker_targets[@]}"; do
   worker_targets+=("$target")
 done
 
+tunnel_enabled_config="$(jq -r '.tunnel.enabled // empty' "$config_path")"
+case "${tunnel_enabled_config,,}" in
+  "")
+    if ((scheduler_is_local)); then
+      tunnel_enabled=1
+    else
+      tunnel_enabled=0
+    fi
+    ;;
+  true|1|yes|on) tunnel_enabled=1 ;;
+  false|0|no|off) tunnel_enabled=0 ;;
+  *) die "tunnel.enabled must be a boolean" ;;
+esac
+
+worker_port_start="$(jq -r '.tunnel.worker_port_start // 39000' "$config_path")"
+nanny_port_start="$(jq -r '.tunnel.nanny_port_start // 40000' "$config_path")"
+[[ "$worker_port_start" =~ ^[0-9]+$ ]] || die "tunnel.worker_port_start must be a port number"
+[[ "$nanny_port_start" =~ ^[0-9]+$ ]] || die "tunnel.nanny_port_start must be a port number"
+((worker_port_start >= 1 && worker_port_start <= 65535)) || die "tunnel.worker_port_start must be between 1 and 65535"
+((nanny_port_start >= 1 && nanny_port_start <= 65535)) || die "tunnel.nanny_port_start must be between 1 and 65535"
+if ((tunnel_enabled && ! scheduler_is_local)); then
+  die "tunnel mode requires scheduler_host to be local"
+fi
+
+worker_forward_targets=()
+worker_forward_slots=()
+worker_forward_worker_ports=()
+worker_forward_nanny_ports=()
+if ((tunnel_enabled)); then
+  remote_slot_index=0
+  while IFS=$'	' read -r target count; do
+    [[ -n "$target" ]] || continue
+    [[ "$count" =~ ^[0-9]+$ ]] || die "max_concurrent_fits must be a non-negative integer for $target"
+    for ((slot = 0; slot < count; slot++)); do
+      worker_port=$((worker_port_start + remote_slot_index))
+      nanny_port=$((nanny_port_start + remote_slot_index))
+      ((worker_port <= 65535)) || die "tunnel.worker_port_start leaves too few available ports"
+      ((nanny_port <= 65535)) || die "tunnel.nanny_port_start leaves too few available ports"
+      [[ "$worker_port" != "$scheduler_port" ]] || die "worker tunnel port overlaps scheduler port: $worker_port"
+      [[ "$nanny_port" != "$scheduler_port" ]] || die "nanny tunnel port overlaps scheduler port: $nanny_port"
+      [[ "$worker_port" != "$nanny_port" ]] || die "worker and nanny tunnel ports overlap: $worker_port"
+      worker_forward_targets+=("$target")
+      worker_forward_slots+=("$slot")
+      worker_forward_worker_ports+=("$worker_port")
+      worker_forward_nanny_ports+=("$nanny_port")
+      remote_slot_index=$((remote_slot_index + 1))
+    done
+  done < <(
+    jq -r --arg scheduler_bare "$scheduler_bare" '
+      def bare: tostring | split("@") | last;
+      def remote_machine:
+        (.host | bare) as $host
+        | (["local", "localhost", "127.0.0.1", "::1"] | index($host) | not);
+      def target:
+        .host as $host
+        | (.username // .user // (if ($host | tostring | contains("@")) then ($host | split("@")[0]) else "" end)) as $user
+        | ($host | bare) as $bare
+        | if (($user | length) > 0 and (($host | tostring | contains("@")) | not))
+          then "\($user)@\($bare)"
+          else $host
+          end;
+      .machines[]
+      | select(remote_machine)
+      | select((.host | bare) != $scheduler_bare)
+      | (.max_concurrent_fits // 0) as $count
+      | select($count > 0)
+      | [target, $count]
+      | @tsv
+    ' "$config_path"
+  )
+
+  for ((i = 0; i < ${#worker_forward_worker_ports[@]}; i++)); do
+    for ((j = i + 1; j < ${#worker_forward_worker_ports[@]}; j++)); do
+      [[ "${worker_forward_worker_ports[$i]}" != "${worker_forward_worker_ports[$j]}" ]] || die "duplicate worker tunnel port: ${worker_forward_worker_ports[$i]}"
+      [[ "${worker_forward_worker_ports[$i]}" != "${worker_forward_nanny_ports[$j]}" ]] || die "worker/nanny tunnel port overlap: ${worker_forward_worker_ports[$i]}"
+      [[ "${worker_forward_nanny_ports[$i]}" != "${worker_forward_worker_ports[$j]}" ]] || die "nanny/worker tunnel port overlap: ${worker_forward_nanny_ports[$i]}"
+      [[ "${worker_forward_nanny_ports[$i]}" != "${worker_forward_nanny_ports[$j]}" ]] || die "duplicate nanny tunnel port: ${worker_forward_nanny_ports[$i]}"
+    done
+  done
+fi
+
 safe_name() {
   local value="$1"
   value="${value//[!A-Za-z0-9_.-]/_}"
@@ -232,6 +315,20 @@ if ((${#worker_targets[@]})); then
 else
   echo "Reverse tunnel workers: none"
 fi
+if ((tunnel_enabled)); then
+  echo "Tunnel worker port base: ${worker_port_start}"
+  echo "Tunnel nanny port base: ${nanny_port_start}"
+  if ((${#worker_forward_targets[@]})); then
+    echo "Worker return forwards:"
+    for index in "${!worker_forward_targets[@]}"; do
+      echo "  ${worker_forward_targets[$index]} slot=${worker_forward_slots[$index]}: worker 127.0.0.1:${worker_forward_worker_ports[$index]}, nanny 127.0.0.1:${worker_forward_nanny_ports[$index]}"
+    done
+  else
+    echo "Worker return forwards: none"
+  fi
+else
+  echo "Tunnel worker forwards: disabled"
+fi
 
 if ((scheduler_is_local)); then
   echo "Scheduler tunnel: none (scheduler runs on this machine)"
@@ -248,8 +345,19 @@ else
 fi
 
 for worker_target in "${worker_targets[@]}"; do
-  start_tunnel "worker_${worker_target##*@}" "$worker_target" \
+  worker_forwards=(
     -R "127.0.0.1:${scheduler_port}:127.0.0.1:${scheduler_port}"
+  )
+  if ((tunnel_enabled)); then
+    for index in "${!worker_forward_targets[@]}"; do
+      [[ "${worker_forward_targets[$index]}" == "$worker_target" ]] || continue
+      worker_forwards+=(
+        -L "127.0.0.1:${worker_forward_worker_ports[$index]}:127.0.0.1:${worker_forward_worker_ports[$index]}"
+        -L "127.0.0.1:${worker_forward_nanny_ports[$index]}:127.0.0.1:${worker_forward_nanny_ports[$index]}"
+      )
+    done
+  fi
+  start_tunnel "worker_${worker_target##*@}" "$worker_target" "${worker_forwards[@]}"
 done
 
 if ((dry_run)); then

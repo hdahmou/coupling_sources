@@ -7,6 +7,11 @@
     "contact_address": "tcp://127.0.0.1:8786",
     "dashboard_address": ":8787"
   },
+  "tunnel": {
+    "enabled": true,
+    "worker_port_start": 39000,
+    "nanny_port_start": 40000
+  },
   "machines": [
     {
       "host": "machine-a",

@@ -17,6 +17,8 @@ from distributed.deploy.ssh import Worker as SSHWorker
 
 LOCAL_HOSTS = {"local", "localhost", "127.0.0.1", "::1"}
 DEFAULT_REMOTE_PYTHON = ".venv/bin/python"
+DEFAULT_TUNNEL_WORKER_PORT_START = 39000
+DEFAULT_TUNNEL_NANNY_PORT_START = 40000
 
 T = TypeVar("T")
 
@@ -146,6 +148,7 @@ class ComputeConfig:
     env: dict[str, object]
     worker_options: dict[str, object]
     scheduler_options: dict[str, object]
+    tunnel: dict[str, object]
     scheduler: dict[str, object] | None
     scheduler_host: str | None
 
@@ -176,6 +179,7 @@ class ComputeConfig:
             scheduler_options=_object_mapping(
                 values.get("scheduler_options"), "scheduler_options"
             ),
+            tunnel=_object_mapping(values.get("tunnel"), "tunnel"),
             scheduler=None if scheduler is None else _object_mapping(scheduler, "scheduler"),
             scheduler_host=(
                 None if values.get("scheduler_host") is None else str(values["scheduler_host"])
@@ -197,6 +201,29 @@ class ComputeConfig:
     @property
     def remote_worker_machines(self) -> tuple[Machine, ...]:
         return tuple(machine for machine in self.worker_machines if not machine.is_local)
+
+    @property
+    def tunnel_enabled(self) -> bool:
+        configured = self.tunnel.get("enabled")
+        if configured is None:
+            return self.scheduler_is_local and bool(self.remote_worker_machines)
+        if isinstance(configured, str):
+            return configured.strip().lower() not in {"0", "false", "no", "off"}
+        return bool(configured)
+
+    @property
+    def tunnel_worker_port_start(self) -> int:
+        return _port_value(
+            self.tunnel.get("worker_port_start", DEFAULT_TUNNEL_WORKER_PORT_START),
+            "tunnel.worker_port_start",
+        )
+
+    @property
+    def tunnel_nanny_port_start(self) -> int:
+        return _port_value(
+            self.tunnel.get("nanny_port_start", DEFAULT_TUNNEL_NANNY_PORT_START),
+            "tunnel.nanny_port_start",
+        )
 
     @property
     def uses_ssh(self) -> bool:
@@ -257,6 +284,13 @@ def add_prompted_ssh_password(compute_config: dict[str, object]) -> None:
     if not isinstance(options, dict):
         raise ValueError("connect_options must be an object when prompting for an SSH password")
     options["password"] = getpass.getpass("SSH password: ")
+
+
+def _port_value(value: object, name: str) -> int:
+    port = int(value)
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{name} must be between 1 and 65535")
+    return port
 
 
 def _safe_path_part(value: object) -> str:
@@ -322,8 +356,52 @@ def _merge_worker_options(
     return merged
 
 
+def _remote_worker_slot_count(config: ComputeConfig) -> int:
+    return sum(machine.max_concurrent_fits for machine in config.remote_worker_machines)
+
+
+def _validate_tunnel_ports(config: ComputeConfig) -> None:
+    if not config.scheduler_is_local:
+        raise ValueError("tunnel mode requires a local scheduler")
+
+    count = _remote_worker_slot_count(config)
+    if count == 0:
+        return
+
+    worker_start = config.tunnel_worker_port_start
+    nanny_start = config.tunnel_nanny_port_start
+    worker_end = worker_start + count - 1
+    nanny_end = nanny_start + count - 1
+    if worker_end > 65535:
+        raise ValueError("tunnel.worker_port_start leaves too few available ports")
+    if nanny_end > 65535:
+        raise ValueError("tunnel.nanny_port_start leaves too few available ports")
+    if max(worker_start, nanny_start) <= min(worker_end, nanny_end):
+        raise ValueError("tunnel worker and nanny port ranges must not overlap")
+
+    scheduler_port = config.scheduler_options.get("port")
+    if scheduler_port is not None:
+        scheduler_port = _port_value(scheduler_port, "scheduler_options.port")
+        if worker_start <= scheduler_port <= worker_end:
+            raise ValueError("scheduler port overlaps tunnel worker port range")
+        if nanny_start <= scheduler_port <= nanny_end:
+            raise ValueError("scheduler port overlaps tunnel nanny port range")
+
+
+def _tunnel_worker_port(config: ComputeConfig, remote_slot_index: int) -> int:
+    return config.tunnel_worker_port_start + remote_slot_index
+
+
+def _tunnel_nanny_port(config: ComputeConfig, remote_slot_index: int) -> int:
+    return config.tunnel_nanny_port_start + remote_slot_index
+
+
 def _ssh_worker_kwargs(
-    machine: Machine, config: ComputeConfig, log_path: Path
+    machine: Machine,
+    config: ComputeConfig,
+    log_path: Path,
+    *,
+    remote_slot_index: int | None = None,
 ) -> dict[str, object]:
     options = _merge_worker_options(
         {
@@ -333,7 +411,21 @@ def _ssh_worker_kwargs(
         machine,
         config,
     )
-    options["n_workers"] = machine.max_concurrent_fits
+    if remote_slot_index is None:
+        options["n_workers"] = machine.max_concurrent_fits
+        return options
+
+    worker_port = _tunnel_worker_port(config, remote_slot_index)
+    nanny_port = _tunnel_nanny_port(config, remote_slot_index)
+    options.pop("n_workers", None)
+    options.update(
+        {
+            "host": "127.0.0.1",
+            "port": nanny_port,
+            "worker_port": worker_port,
+            "contact_address": f"tcp://127.0.0.1:{worker_port}",
+        }
+    )
     return options
 
 
@@ -379,21 +471,56 @@ def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
     scheduler = _scheduler_spec(config)
 
     workers: dict[str, dict[str, object]] = {}
-    for index, machine in enumerate(config.remote_worker_machines):
-        print(
-            f"remote worker log dir: {machine.host}: {_remote_worker_log_dir(machine, log_path)}",
-            file=sys.stderr,
-        )
-        workers[f"{machine.host}-{index}"] = {
-            "cls": SSHWorker,
-            "options": {
-                "address": machine.host,
-                "connect_options": machine.ssh_connect_options(config),
-                "kwargs": _ssh_worker_kwargs(machine, config, log_path),
-                "worker_class": "distributed.Nanny",
-                "remote_python": machine.remote_python_path(config.python),
-            },
-        }
+    if config.tunnel_enabled:
+        _validate_tunnel_ports(config)
+        remote_slot_index = 0
+        for machine in config.remote_worker_machines:
+            print(
+                f"remote worker log dir: {machine.host}: {_remote_worker_log_dir(machine, log_path)}",
+                file=sys.stderr,
+            )
+            for slot in range(machine.max_concurrent_fits):
+                worker_port = _tunnel_worker_port(config, remote_slot_index)
+                nanny_port = _tunnel_nanny_port(config, remote_slot_index)
+                print(
+                    "remote worker tunnel ports: "
+                    f"{machine.host} slot={slot} "
+                    f"worker=127.0.0.1:{worker_port} "
+                    f"nanny=127.0.0.1:{nanny_port}",
+                    file=sys.stderr,
+                )
+                workers[f"{machine.host}-{remote_slot_index}"] = {
+                    "cls": SSHWorker,
+                    "options": {
+                        "address": machine.host,
+                        "connect_options": machine.ssh_connect_options(config),
+                        "kwargs": _ssh_worker_kwargs(
+                            machine,
+                            config,
+                            log_path,
+                            remote_slot_index=remote_slot_index,
+                        ),
+                        "worker_class": "distributed.Nanny",
+                        "remote_python": machine.remote_python_path(config.python),
+                    },
+                }
+                remote_slot_index += 1
+    else:
+        for index, machine in enumerate(config.remote_worker_machines):
+            print(
+                f"remote worker log dir: {machine.host}: {_remote_worker_log_dir(machine, log_path)}",
+                file=sys.stderr,
+            )
+            workers[f"{machine.host}-{index}"] = {
+                "cls": SSHWorker,
+                "options": {
+                    "address": machine.host,
+                    "connect_options": machine.ssh_connect_options(config),
+                    "kwargs": _ssh_worker_kwargs(machine, config, log_path),
+                    "worker_class": "distributed.Nanny",
+                    "remote_python": machine.remote_python_path(config.python),
+                },
+            }
 
     local_machine = config.local_machine
     if local_machine is not None:

@@ -40,8 +40,8 @@ class SimParams:
         return {
             "alpha": dist.Beta(2.0, 2.0),
             "gamma": dist.Beta(2.0, 2.0),
-            "kappa_p": dist.LogNormal(jnp.log(8.0), 1.0),
-            "kappa_a": dist.LogNormal(jnp.log(5.0), 0.5),
+            "kappa_p": dist.Gamma(concentration=5.0, rate=1.0 / 3.0),
+            "kappa_a": dist.Gamma(concentration=5.0, rate=1.0 / 3.0),
         }
 
     @classmethod
