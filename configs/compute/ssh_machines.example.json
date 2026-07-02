@@ -16,7 +16,7 @@
     {
       "host": "machine-b",
       "project_path": "/absolute/path/to/coupling_sources/on/machine-b",
-      "max_concurrent_fits": 4
+      "max_concurrent_fits": 0
     }
   ]
 }

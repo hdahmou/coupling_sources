@@ -14,8 +14,11 @@ def choice_model(
     debug: bool = False,
 ) -> None:
     coupled_sources = (0, 1)
-    if isinstance(metadata, dict) and "coupled_sources" in metadata:
-        coupled_sources = tuple(metadata["coupled_sources"])
+    record_response_mean = True
+    if isinstance(metadata, dict):
+        if "coupled_sources" in metadata:
+            coupled_sources = tuple(metadata["coupled_sources"])
+        record_response_mean = bool(metadata.get("record_response_mean", True))
 
     source_choices = jnp.asarray(simulator_output["source_choices"])
     hidden_source = jnp.asarray(simulator_output["hidden_source"])
@@ -59,7 +62,8 @@ def choice_model(
             agreement_scores[:, :, coupled_sources[0], coupled_sources[1]],
         )
 
-    response_mu = numpyro.deterministic("response_mean_angle", response_mu)
+    if record_response_mean:
+        response_mu = numpyro.deterministic("response_mean_angle", response_mu)
     obs = None if choices is None else centered_angle(choices)
 
     with numpyro.plate("round", source_choices.shape[1], dim=-2):

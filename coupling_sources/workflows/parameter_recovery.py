@@ -6,7 +6,7 @@ import re
 import shutil
 import sys
 import traceback
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -82,6 +82,40 @@ def _set_worker_xla_host_device_count(
     )
 
 
+def _safe_log_name(value: object) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._-")
+    return name or "job"
+
+
+@contextmanager
+def _task_worker_log(job_id: str):
+    log_dir = os.environ.get("COUPLING_SOURCES_WORKER_LOG_DIR")
+    if log_dir is None:
+        with nullcontext():
+            yield
+        return
+
+    log_path = Path(log_dir) / f"{_safe_log_name(job_id)}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", buffering=1) as log_file:
+        stdout_fd = os.dup(sys.stdout.fileno())
+        stderr_fd = os.dup(sys.stderr.fileno())
+        try:
+            os.dup2(log_file.fileno(), sys.stdout.fileno())
+            os.dup2(log_file.fileno(), sys.stderr.fileno())
+            with redirect_stdout(log_file), redirect_stderr(log_file):
+                print(f"worker task log start: {job_id}", file=sys.stderr)
+                yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            log_file.flush()
+            os.dup2(stdout_fd, sys.stdout.fileno())
+            os.dup2(stderr_fd, sys.stderr.fileno())
+            os.close(stdout_fd)
+            os.close(stderr_fd)
+
+
 @dataclass(frozen=True)
 class PosteriorFit:
     output: Path
@@ -109,14 +143,16 @@ def _run_inference_job(
     progress_bar: bool,
     job_id: str,
 ) -> dict[str, object]:
-    print(f"fit start: {job_id}", file=sys.stderr)
-    posterior = fit_posterior(
-        simulation=simulation,
-        params=params,
-        host_device_count=host_device_count,
-        progress_bar=progress_bar,
-        progress_label=job_id,
-    )
+    with _task_worker_log(job_id):
+        print(f"fit start: {job_id}", file=sys.stderr)
+        posterior = fit_posterior(
+            simulation=simulation,
+            params=params,
+            host_device_count=host_device_count,
+            progress_bar=progress_bar,
+            progress_label=job_id,
+        )
+        print(f"fit done: {job_id}", file=sys.stderr)
     return {"job_id": job_id, **posterior}
 
 
@@ -135,7 +171,6 @@ def _dispatch_posterior_fits(
             output,
             diagnostics=posterior["diagnostics"],
             samples=posterior["samples"],
-            summary=posterior["summary"],
         )
         print(f"fit complete: {posterior['job_id']}: {output}", file=sys.stderr)
 

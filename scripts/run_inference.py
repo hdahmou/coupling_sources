@@ -49,7 +49,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output,
         diagnostics=posterior["diagnostics"],
         samples=posterior["samples"],
-        summary=posterior["summary"],
     )
     print(
         f"posterior {args.output}: "

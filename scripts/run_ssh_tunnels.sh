@@ -198,6 +198,7 @@ start_tunnel() {
     -o ControlMaster=yes
     -o ControlPersist=no
     -o ExitOnForwardFailure=yes
+    -o ConnectTimeout=15
     -o ServerAliveInterval=30
     -o ServerAliveCountMax=3
     "$@"

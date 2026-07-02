@@ -9,16 +9,11 @@ import numpyro.diagnostics as diagnostics
 import numpyro
 import numpyro.infer.mcmc as numpyro_mcmc
 import numpyro.util as numpyro_util
-import pandas as pd
 
 from coupling_sources.core.model import choice_model
 from coupling_sources.core.parameters.mcmc import MCMCParams
 from coupling_sources.core.parameters.simulation import SimParams
 from coupling_sources.core.simulation import SimulationArtifact
-from coupling_sources.core.summarize_posterior import (
-    parameter_values,
-    summarize_posterior,
-)
 
 
 def fit_mcmc(
@@ -52,7 +47,7 @@ def fit_mcmc(
         chain_method=chain_method,
         progress_bar=progress_bar,
     )
-    mcmc.run(key, data, None, extra_fields=("diverging",))
+    mcmc.run(key, data, {"record_response_mean": False}, extra_fields=("diverging",))
     return mcmc
 
 
@@ -163,8 +158,6 @@ def fit_posterior(
     choices = jnp.asarray(simulation.choices)
     source_choices = jnp.asarray(simulation.source_choices)
     hidden_source = jnp.asarray(simulation.hidden_source)
-    true_params = simulation.participant_parameters
-
     with _labeled_progress_bar(progress_label if progress_bar else None):
         mcmc = fit_mcmc(
             jax.random.PRNGKey(params.seed),
@@ -179,17 +172,13 @@ def fit_posterior(
             max_tree_depth=params.max_tree_depth,
             progress_bar=progress_bar,
         )
-    flat_samples = mcmc.get_samples(group_by_chain=False)
     chain_samples = mcmc.get_samples(group_by_chain=True)
     parameter_names = SimParams.names()
-    summary = summarize_posterior(
-        pd.DataFrame({name: np.asarray(flat_samples[name]) for name in parameter_names}),
-        parameter_values(true_params),
-    )
-    summary.index.name = "parameter"
     return {
         "chain_method": mcmc.chain_method,
         "diagnostics": _mcmc_diagnostics(mcmc),
-        "samples": {name: chain_samples[name] for name in parameter_names},
-        "summary": summary,
+        "samples": {
+            name: np.asarray(jax.device_get(chain_samples[name]), dtype=np.float16)
+            for name in parameter_names
+        },
     }

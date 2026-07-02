@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import getpass
 import re
+import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -60,8 +61,8 @@ class Machine:
         configured_user = values.get("username", values.get("user", shorthand_user))
         max_concurrent_fits = int(values.get("max_concurrent_fits", default_worker_count or 0))
         threads_per_worker = int(values.get("threads_per_worker", 1))
-        if max_concurrent_fits < 1:
-            raise ValueError(f"max_concurrent_fits must be positive for {host}")
+        if max_concurrent_fits < 0:
+            raise ValueError(f"max_concurrent_fits cannot be negative for {host}")
         if threads_per_worker < 1:
             raise ValueError(f"threads_per_worker must be positive for {host}")
 
@@ -159,6 +160,11 @@ class ComputeConfig:
         machines = tuple(Machine.from_mapping(machine) for machine in raw_machines)
         if sum(machine.is_local for machine in machines) > 1:
             raise ValueError("compute config can include at most one local machine entry")
+        if not any(machine.max_concurrent_fits > 0 for machine in machines):
+            raise ValueError(
+                "compute config must include at least one machine with "
+                "max_concurrent_fits > 0"
+            )
 
         scheduler = values.get("scheduler")
         return cls(
@@ -185,8 +191,22 @@ class ComputeConfig:
         return tuple(machine for machine in self.machines if not machine.is_local)
 
     @property
+    def worker_machines(self) -> tuple[Machine, ...]:
+        return tuple(machine for machine in self.machines if machine.max_concurrent_fits > 0)
+
+    @property
+    def remote_worker_machines(self) -> tuple[Machine, ...]:
+        return tuple(machine for machine in self.worker_machines if not machine.is_local)
+
+    @property
     def uses_ssh(self) -> bool:
-        return bool(self.remote_machines)
+        return bool(self.remote_worker_machines) or self.scheduler_uses_ssh
+
+    @property
+    def scheduler_uses_ssh(self) -> bool:
+        if self.scheduler is None and self.scheduler_host is None:
+            return False
+        return not self.scheduler_is_local
 
     @property
     def scheduler_is_local(self) -> bool:
@@ -224,9 +244,9 @@ class ComputeConfig:
                     return machine
             raise ValueError(f"scheduler_host {host!r} is not listed in machines")
 
-        if not self.remote_machines:
-            raise ValueError("SSH compute requires at least one non-local machine")
-        return self.remote_machines[0]
+        if not self.remote_worker_machines:
+            raise ValueError("SSH compute requires at least one active non-local machine")
+        return self.remote_worker_machines[0]
 
 
 def add_prompted_ssh_password(compute_config: dict[str, object]) -> None:
@@ -258,12 +278,6 @@ def _remote_worker_log_dir(machine: Machine, log_path: Path) -> Path:
         / _run_dir_relative_to_project(log_path)
         / "worker_logs"
         / _safe_path_part(machine.host)
-    )
-
-
-def _remote_preload_path(machine: Machine) -> str:
-    return str(
-        machine.remote_project_path() / "coupling_sources" / "compute" / "dask_log_preload.py"
     )
 
 
@@ -313,7 +327,6 @@ def _ssh_worker_kwargs(
         {
             "nthreads": machine.threads_per_worker,
             "env": _remote_worker_env(machine, config, log_path),
-            "preload": [_remote_preload_path(machine)],
         },
         machine,
         config,
@@ -364,7 +377,7 @@ def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
     scheduler = _scheduler_spec(config)
 
     workers: dict[str, dict[str, object]] = {}
-    for index, machine in enumerate(config.remote_machines):
+    for index, machine in enumerate(config.remote_worker_machines):
         workers[f"{machine.host}-{index}"] = {
             "cls": SSHWorker,
             "options": {
@@ -391,7 +404,11 @@ def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
 def _compute_client(compute_config: dict[str, object], log_path: Path) -> Iterator[Client]:
     config = ComputeConfig.from_mapping(compute_config)
     local_machine = config.local_machine
-    if local_machine is not None and len(config.machines) == 1:
+    if (
+        local_machine is not None
+        and local_machine.max_concurrent_fits > 0
+        and config.worker_machines == (local_machine,)
+    ):
         with LocalCluster(
             n_workers=local_machine.max_concurrent_fits,
             **_local_cluster_options(local_machine, config, log_path),
@@ -410,6 +427,14 @@ def run_tasks(
     submissions: Iterable[tuple[T, dict[str, object]]],
 ) -> Iterator[tuple[T, object]]:
     with _compute_client(compute_config, log_path) as client:
-        futures = {client.submit(task, **kwargs): metadata for metadata, kwargs in submissions}
-        for future in as_completed(futures):
-            yield futures[future], future.result()
+        items = list(submissions)
+        worker_count = len(client.scheduler_info().get("workers", {}))
+        print(
+            f"cluster ready: {worker_count} worker(s); submitting {len(items)} task(s)",
+            file=sys.stderr,
+        )
+        futures = {client.submit(task, **kwargs): metadata for metadata, kwargs in items}
+        for completed, future in enumerate(as_completed(futures), start=1):
+            result = future.result()
+            print(f"task result received: {completed}/{len(futures)}", file=sys.stderr)
+            yield futures[future], result

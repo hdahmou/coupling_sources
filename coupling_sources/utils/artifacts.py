@@ -7,7 +7,6 @@ from typing import Any
 
 import jax
 import numpy as np
-import pandas as pd
 import zarr
 
 from coupling_sources.core.parameters.simulation import SimParams
@@ -101,7 +100,6 @@ def write_posterior_zarr(
     *,
     diagnostics: dict[str, Any],
     samples: dict[str, Any],
-    summary: pd.DataFrame,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     root = zarr.open_group(output, mode="w")
@@ -109,13 +107,8 @@ def write_posterior_zarr(
 
     samples_group = root.create_group("posterior_samples")
     samples_group.attrs["dims"] = ["chain", "draw"]
+    samples_group.attrs["dtype"] = "float16"
     for parameter, values in samples.items():
-        data = _array(values)
+        data = _array(values).astype(np.float16, copy=False)
         chunks = (1, data.shape[1]) if data.ndim == 2 else data.shape
         samples_group.create_array(parameter, data=data, chunks=chunks)
-
-    summary_group = root.create_group("posterior_summary")
-    summary_group.attrs["parameter"] = list(summary.index)
-    summary_group.attrs["dims"] = ["parameter"]
-    for column in summary.columns:
-        summary_group.create_array(column, data=summary[column].to_numpy())

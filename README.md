@@ -27,7 +27,7 @@ Terminal 2 starts parameter recovery:
   --compute-config configs/ssh_machines.json
 ```
 
-The runner asks once for the shared SSH password when the compute config contains SSH machines.
+The runner asks once for the shared SSH password when the compute config contains active SSH workers.
 
 Open the Dask dashboard during the run at:
 
@@ -55,6 +55,6 @@ The default SSH setup runs the Dask scheduler on the current machine and starts 
 }
 ```
 
-Each remote machine entry needs a reachable `host`, its own `project_path`, and a usable Python path relative to that project path. The repo and environment must already exist on each remote machine.
+Each remote machine entry needs a reachable `host`, its own `project_path`, and a usable Python path relative to that project path. The repo and environment must already exist on each remote machine. Set `max_concurrent_fits` to the number of workers to launch on that host; set it to `0` to keep the host in the config but disable it for the current run. Disabled hosts are skipped by Dask, but `scripts/run_ssh_tunnels.sh` still keeps tunnels for all configured remote hosts.
 
 Use `scripts/run_ssh_tunnels.sh --dry-run --config configs/ssh_machines.json` to inspect the SSH commands without starting tunnels. If SSH reports `remote port forwarding failed` or `address already in use`, choose another unused scheduler port and replace `8786` everywhere in the config.
