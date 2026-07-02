@@ -1,5 +1,12 @@
 {
   "python": ".venv/bin/python",
+  "scheduler_host": "local",
+  "scheduler_options": {
+    "host": "127.0.0.1",
+    "port": 8786,
+    "contact_address": "tcp://127.0.0.1:8786",
+    "dashboard_address": ":8787"
+  },
   "machines": [
     {
       "host": "machine-a",

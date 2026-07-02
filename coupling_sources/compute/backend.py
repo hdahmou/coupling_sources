@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import getpass
+import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
-from distributed import Client, LocalCluster, Nanny, as_completed
+from distributed import Client, LocalCluster, Nanny, Scheduler, as_completed
 from distributed.deploy.spec import SpecCluster
 from distributed.deploy.ssh import Scheduler as SSHScheduler
 from distributed.deploy.ssh import Worker as SSHWorker
@@ -187,22 +188,37 @@ class ComputeConfig:
     def uses_ssh(self) -> bool:
         return bool(self.remote_machines)
 
+    @property
+    def scheduler_is_local(self) -> bool:
+        if self.scheduler is not None:
+            if "host" not in self.scheduler:
+                raise ValueError("scheduler must include host")
+            _, host = _split_host(self.scheduler["host"])
+            return host in LOCAL_HOSTS
+
+        if self.scheduler_host is not None:
+            _, host = _split_host(self.scheduler_host)
+            return host in LOCAL_HOSTS
+
+        return False
+
     def scheduler_machine(self) -> Machine:
         if self.scheduler is not None:
             if "host" not in self.scheduler:
                 raise ValueError("scheduler must include host")
             _, host = _split_host(self.scheduler["host"])
+            if host in LOCAL_HOSTS:
+                raise ValueError("local scheduler does not have a remote machine")
             base = next((machine for machine in self.remote_machines if machine.host == host), None)
             values = {"host": self.scheduler["host"], **self.scheduler}
             if base is not None:
                 values = {**base.as_mapping(), **values}
-            machine = Machine.from_mapping(values, default_worker_count=1)
-            if machine.is_local:
-                raise ValueError("scheduler host must be a non-local machine")
-            return machine
+            return Machine.from_mapping(values, default_worker_count=1)
 
         if self.scheduler_host is not None:
             _, host = _split_host(self.scheduler_host)
+            if host in LOCAL_HOSTS:
+                raise ValueError("local scheduler does not have a remote machine")
             for machine in self.remote_machines:
                 if machine.host == host:
                     return machine
@@ -223,7 +239,37 @@ def add_prompted_ssh_password(compute_config: dict[str, object]) -> None:
     options["password"] = getpass.getpass("SSH password: ")
 
 
-def _remote_worker_env(machine: Machine, config: ComputeConfig) -> dict[str, str]:
+def _safe_path_part(value: object) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._-")
+    return name or "machine"
+
+
+def _run_dir_relative_to_project(log_path: Path) -> Path:
+    run_dir = log_path.parent.resolve()
+    try:
+        return run_dir.relative_to(Path.cwd().resolve())
+    except ValueError:
+        return Path("artifacts") / run_dir.name
+
+
+def _remote_worker_log_dir(machine: Machine, log_path: Path) -> Path:
+    return (
+        machine.remote_project_path()
+        / _run_dir_relative_to_project(log_path)
+        / "worker_logs"
+        / _safe_path_part(machine.host)
+    )
+
+
+def _remote_preload_path(machine: Machine) -> str:
+    return str(
+        machine.remote_project_path() / "coupling_sources" / "compute" / "dask_log_preload.py"
+    )
+
+
+def _remote_worker_env(
+    machine: Machine, config: ComputeConfig, log_path: Path
+) -> dict[str, str]:
     project_path = machine.remote_project_path()
     project_pythonpath = f"{project_path}:{project_path / 'scripts'}"
     env = machine.env_with(config)
@@ -233,6 +279,7 @@ def _remote_worker_env(machine: Machine, config: ComputeConfig) -> dict[str, str
         if configured_pythonpath is None
         else f"{project_pythonpath}:{configured_pythonpath}"
     )
+    env["COUPLING_SOURCES_WORKER_LOG_DIR"] = str(_remote_worker_log_dir(machine, log_path))
     return env
 
 
@@ -259,9 +306,15 @@ def _merge_worker_options(
     return merged
 
 
-def _ssh_worker_kwargs(machine: Machine, config: ComputeConfig) -> dict[str, object]:
+def _ssh_worker_kwargs(
+    machine: Machine, config: ComputeConfig, log_path: Path
+) -> dict[str, object]:
     options = _merge_worker_options(
-        {"nthreads": machine.threads_per_worker, "env": _remote_worker_env(machine, config)},
+        {
+            "nthreads": machine.threads_per_worker,
+            "env": _remote_worker_env(machine, config, log_path),
+            "preload": [_remote_preload_path(machine)],
+        },
         machine,
         config,
     )
@@ -291,9 +344,12 @@ def _local_cluster_options(
     return options
 
 
-def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
+def _scheduler_spec(config: ComputeConfig) -> dict[str, object]:
+    if config.scheduler_is_local:
+        return {"cls": Scheduler, "options": dict(config.scheduler_options)}
+
     scheduler_machine = config.scheduler_machine()
-    scheduler = {
+    return {
         "cls": SSHScheduler,
         "options": {
             "address": scheduler_machine.host,
@@ -303,6 +359,10 @@ def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
         },
     }
 
+
+def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
+    scheduler = _scheduler_spec(config)
+
     workers: dict[str, dict[str, object]] = {}
     for index, machine in enumerate(config.remote_machines):
         workers[f"{machine.host}-{index}"] = {
@@ -310,7 +370,7 @@ def _build_ssh_cluster(config: ComputeConfig, log_path: Path) -> SpecCluster:
             "options": {
                 "address": machine.host,
                 "connect_options": machine.ssh_connect_options(config),
-                "kwargs": _ssh_worker_kwargs(machine, config),
+                "kwargs": _ssh_worker_kwargs(machine, config, log_path),
                 "worker_class": "distributed.Nanny",
                 "remote_python": machine.remote_python_path(config.python),
             },
