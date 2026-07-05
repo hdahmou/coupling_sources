@@ -19,7 +19,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--alpha", type=float, required=True)
     parser.add_argument("--gamma", type=float, required=True)
     parser.add_argument("--kappa-p", type=float, required=True)
-    parser.add_argument("--kappa-a", type=float, required=True)
+    parser.add_argument("--c0", type=float, default=0.0)
     parser.add_argument("--output", type=Path, required=True, help="Output Zarr directory.")
     return parser.parse_args(argv)
 
@@ -32,7 +32,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             alpha=args.alpha,
             gamma=args.gamma,
             kappa_p=args.kappa_p,
-            kappa_a=args.kappa_a,
+            c0=args.c0,
         ),
         stimuli=read_stimuli_zarr(args.stimuli),
     )

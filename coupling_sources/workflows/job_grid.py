@@ -8,7 +8,6 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from coupling_sources.core.parameter_prior import sample_parameter_prior
 from coupling_sources.core.parameters.simulation import SimParams
 from coupling_sources.core.parameters.stimuli import StimuliParams
 
@@ -20,7 +19,7 @@ class GridRun:
     simulation: SimParams
 
 
-def _expand_grid(block: dict[str, Any]) -> list[dict[str, Any]]:
+def _expand_product_config(block: dict[str, Any]) -> list[dict[str, Any]]:
     if "grid" not in block:
         return [block]
 
@@ -38,24 +37,8 @@ def _expand_grid(block: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _stimulus_grid(config: dict[str, Any]) -> list[StimuliParams]:
-    return [StimuliParams.from_mapping(values) for values in _expand_grid(config["stimuli"])]
-
-
-def _parameter_grid(config: dict[str, Any]) -> list[SimParams]:
-    simulation = config["simulation"]
-    if "participant_parameters" in simulation:
-        return [
-            SimParams.from_mapping(values)
-            for values in _expand_grid(simulation["participant_parameters"])
-        ]
-
-    prior = config["prior"]
-    return _sample_prior_parameter_grid(seed=prior["seed"], draws=prior["parameter_draws"])
-
-
-def _sample_prior_parameter_grid(seed: int, draws: int) -> list[SimParams]:
-    samples = sample_parameter_prior(seed, draws)
+def _sample_sim_params_from_prior(seed: int, draws: int) -> list[SimParams]:
+    samples = SimParams.sample_prior_draws(seed, draws)
     parameter_names = SimParams.names()
     return [
         SimParams(*(samples[name][index] for name in parameter_names))
@@ -64,7 +47,24 @@ def _sample_prior_parameter_grid(seed: int, draws: int) -> list[SimParams]:
 
 
 def build_run_grid(config: dict[str, Any]) -> list[GridRun]:
-    run_inputs = product(_stimulus_grid(config), _parameter_grid(config))
+    stimuli = [
+        StimuliParams.from_mapping(values)
+        for values in _expand_product_config(config["stimuli"])
+    ]
+    simulation = config["simulation"]
+    if "participant_parameters" in simulation:
+        parameters = [
+            SimParams.from_mapping(values)
+            for values in _expand_product_config(simulation["participant_parameters"])
+        ]
+    else:
+        prior = config["prior"]
+        parameters = _sample_sim_params_from_prior(
+            seed=prior["seed"],
+            draws=prior["parameter_draws"],
+        )
+
+    run_inputs = product(stimuli, parameters)
     return [
         GridRun(f"job_{index:06d}", stimuli, parameters)
         for index, (stimuli, parameters) in enumerate(run_inputs)
@@ -75,16 +75,6 @@ def _csv_value(value: object) -> object:
     if isinstance(value, list | tuple | dict):
         return json.dumps(value)
     return value
-
-
-def _add_prefixed_values(
-    row: dict[str, object],
-    prefix: str,
-    names: Sequence[str],
-    source: object,
-) -> None:
-    for name in names:
-        row[f"{prefix}_{name}"] = _csv_value(getattr(source, name))
 
 
 def write_job_grid(output: Path, runs: Sequence[GridRun]) -> None:
@@ -105,6 +95,16 @@ def write_job_grid(output: Path, runs: Sequence[GridRun]) -> None:
                 "simulation_path": str(job_path / "simulation.zarr"),
                 "posterior_path": str(job_path / "posterior.zarr"),
             }
-            _add_prefixed_values(row, "stimuli", stimuli_names, run.stimuli)
-            _add_prefixed_values(row, "simulation", simulation_names, run.simulation)
+            row.update(
+                {
+                    f"stimuli_{name}": _csv_value(getattr(run.stimuli, name))
+                    for name in stimuli_names
+                }
+            )
+            row.update(
+                {
+                    f"simulation_{name}": _csv_value(getattr(run.simulation, name))
+                    for name in simulation_names
+                }
+            )
             writer.writerow(row)

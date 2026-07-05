@@ -6,28 +6,25 @@ import re
 import shutil
 import sys
 import traceback
-from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 
-from coupling_sources.core.inference import fit_posterior
-from coupling_sources.core.parameter_prior import sample_parameter_prior
+from coupling_sources.compute.backend import (
+    PosteriorJob,
+    add_prompted_ssh_password,
+    run_posterior_jobs,
+)
 from coupling_sources.core.parameters.mcmc import MCMCParams
 from coupling_sources.core.parameters.simulation import SimParams
-from coupling_sources.core.parameters.stimuli import StimuliParams
-from coupling_sources.core.simulation import SimulationArtifact, generate_simulation
+from coupling_sources.core.simulation import generate_simulation
 from coupling_sources.core.stimuli import generate_stimulus
-from coupling_sources.compute.backend import add_prompted_ssh_password, run_tasks
 from coupling_sources.utils.artifacts import (
-    read_simulation_zarr,
-    write_posterior_zarr,
     write_prior_zarr,
     write_simulation_zarr,
     write_stimuli_zarr,
 )
-from coupling_sources.workflows.job_grid import build_run_grid, write_job_grid
-from distributed import print as dask_print
+from coupling_sources.workflows.job_grid import GridRun, build_run_grid, write_job_grid
 
 
 @contextmanager
@@ -55,7 +52,10 @@ def _xla_host_device_count(mcmc_config: dict[str, object]) -> int | None:
     configured = mcmc_config.get("host_device_count")
     if configured is not None:
         count = int(configured)
-    elif mcmc_config.get("chain_method") == "parallel" and int(mcmc_config["num_chains"]) > 1:
+    elif (
+        mcmc_config.get("chain_method") == "parallel"
+        and int(mcmc_config["num_chains"]) > 1
+    ):
         count = int(mcmc_config["num_chains"])
     else:
         return None
@@ -83,119 +83,6 @@ def _set_worker_xla_host_device_count(
     )
 
 
-def _safe_log_name(value: object) -> str:
-    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._-")
-    return name or "job"
-
-
-@contextmanager
-def _task_worker_log(job_id: str):
-    log_dir = os.environ.get("COUPLING_SOURCES_WORKER_LOG_DIR")
-    if log_dir is None:
-        with nullcontext():
-            yield None
-        return
-
-    log_path = Path(log_dir) / f"{_safe_log_name(job_id)}.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", buffering=1) as log_file:
-        stdout_fd = os.dup(sys.stdout.fileno())
-        stderr_fd = os.dup(sys.stderr.fileno())
-        try:
-            os.dup2(log_file.fileno(), sys.stdout.fileno())
-            os.dup2(log_file.fileno(), sys.stderr.fileno())
-            with redirect_stdout(log_file), redirect_stderr(log_file):
-                dask_print(f"worker task log start: {job_id}", file=sys.stderr, flush=True)
-                dask_print(f"worker task log path: {log_path}", file=sys.stderr, flush=True)
-                yield log_path
-        finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
-            log_file.flush()
-            os.dup2(stdout_fd, sys.stdout.fileno())
-            os.dup2(stderr_fd, sys.stderr.fileno())
-            os.close(stdout_fd)
-            os.close(stderr_fd)
-
-
-@dataclass(frozen=True)
-class PosteriorFit:
-    output: Path
-    simulation: SimulationArtifact
-    params: MCMCParams
-    host_device_count: int | None
-    progress_bar: bool
-    job_id: str
-
-    def task_kwargs(self) -> dict[str, object]:
-        return {
-            "simulation": self.simulation,
-            "params": self.params,
-            "host_device_count": self.host_device_count,
-            "progress_bar": self.progress_bar,
-            "job_id": self.job_id,
-        }
-
-
-def _run_inference_job(
-    *,
-    simulation: SimulationArtifact,
-    params: MCMCParams,
-    host_device_count: int | None,
-    progress_bar: bool,
-    job_id: str,
-) -> dict[str, object]:
-    worker_host = os.environ.get("COUPLING_SOURCES_WORKER_HOST")
-    worker_log_path = None
-    with _task_worker_log(job_id) as task_log_path:
-        worker_log_path = task_log_path
-        dask_print(f"fit start: {job_id}", file=sys.stderr, flush=True)
-        try:
-            posterior = fit_posterior(
-                simulation=simulation,
-                params=params,
-                host_device_count=host_device_count,
-                progress_bar=progress_bar,
-                progress_label=job_id,
-            )
-        except Exception:
-            error = traceback.format_exc()
-            print(error, file=sys.stderr)
-            dask_print(error, file=sys.stderr, flush=True)
-            raise
-        dask_print(f"fit done: {job_id}", file=sys.stderr, flush=True)
-    return {
-        "job_id": job_id,
-        "worker_host": worker_host,
-        "worker_log_path": None if worker_log_path is None else str(worker_log_path),
-        **posterior,
-    }
-
-
-def _dispatch_posterior_fits(
-    fits: list[PosteriorFit],
-    compute_config: dict[str, object],
-    log_path: Path,
-) -> None:
-    if not fits:
-        return
-
-    submissions = [(fit.output, fit.task_kwargs()) for fit in fits]
-    for output, result in run_tasks(compute_config, log_path, _run_inference_job, submissions):
-        posterior = result
-        write_posterior_zarr(
-            output,
-            diagnostics=posterior["diagnostics"],
-            samples=posterior["samples"],
-        )
-        log_detail = ""
-        if posterior.get("worker_host"):
-            log_detail += f" worker={posterior['worker_host']}"
-        if posterior.get("worker_log_path"):
-            log_detail += f" worker_log={posterior['worker_log_path']}"
-        print(f"fit complete: {posterior['job_id']}: {output}{log_detail}", file=sys.stderr)
-
-
 def _job_name_from_config(config_path: Path, started_at: datetime) -> str:
     resolved = config_path.resolve()
     try:
@@ -212,38 +99,24 @@ def _job_name_from_config(config_path: Path, started_at: datetime) -> str:
 
 def _prepare_job(
     *,
-    job_dir: Path,
-    stimuli_params: StimuliParams,
+    run_dir: Path,
+    run: GridRun,
     simulation_seed: int,
-    simulation_params: SimParams,
-    mcmc_params: MCMCParams,
-    host_device_count: int | None,
-    progress_bar: bool,
-) -> PosteriorFit:
+) -> PosteriorJob:
+    job_dir = run_dir / "jobs" / run.run_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    stimuli_path = job_dir / "stimuli.zarr"
-    simulation_path = job_dir / "simulation.zarr"
-    posterior_path = job_dir / "posterior.zarr"
-
-    stimuli = generate_stimulus(stimuli_params)
-    write_stimuli_zarr(stimuli_path, stimuli)
+    stimuli = generate_stimulus(run.stimuli)
+    write_stimuli_zarr(job_dir / "stimuli.zarr", stimuli)
     simulation = generate_simulation(
         seed=simulation_seed,
-        params=simulation_params,
+        params=run.simulation,
         stimuli=stimuli,
     )
-    write_simulation_zarr(simulation_path, simulation)
+    write_simulation_zarr(job_dir / "simulation.zarr", simulation)
     print(f"prepared {job_dir}", file=sys.stderr)
 
-    return PosteriorFit(
-        output=posterior_path,
-        simulation=read_simulation_zarr(simulation_path),
-        params=mcmc_params,
-        host_device_count=host_device_count,
-        progress_bar=progress_bar,
-        job_id=job_dir.name,
-    )
+    return PosteriorJob(job_id=run.run_id, job_dir=job_dir)
 
 
 def run_parameter_recovery(
@@ -276,27 +149,37 @@ def run_parameter_recovery(
             host_device_count = _xla_host_device_count(mcmc_config)
             _set_worker_xla_host_device_count(compute_config, host_device_count)
             mcmc_params = MCMCParams.from_mapping(mcmc_config)
-            progress_bar = mcmc_config["progress_bar"]
+            progress_bar = bool(mcmc_config["progress_bar"])
 
-            prior_samples = sample_parameter_prior(diagnostic_prior_seed, diagnostic_prior_draws)
+            prior_samples = SimParams.sample_prior_draws(
+                diagnostic_prior_seed,
+                diagnostic_prior_draws,
+            )
             write_prior_zarr(base_job_dir / "prior.zarr", prior_samples)
             write_job_grid(base_job_dir / "job_grid.csv", runs)
 
-            posterior_fits: list[PosteriorFit] = []
-            for run in runs:
-                posterior_fits.append(
-                    _prepare_job(
-                        job_dir=base_job_dir / "jobs" / run.run_id,
-                        stimuli_params=run.stimuli,
-                        simulation_seed=simulation_seed,
-                        simulation_params=run.simulation,
-                        mcmc_params=mcmc_params,
-                        host_device_count=host_device_count,
-                        progress_bar=progress_bar,
-                    )
+            posterior_jobs = [
+                _prepare_job(
+                    run_dir=base_job_dir,
+                    run=run,
+                    simulation_seed=simulation_seed,
                 )
+                for run in runs
+            ]
 
-            _dispatch_posterior_fits(posterior_fits, compute_config, log_path)
+            run_posterior_jobs(
+                compute_config=compute_config,
+                run_dir=base_job_dir,
+                jobs=posterior_jobs,
+                mcmc_params=mcmc_params,
+                host_device_count=host_device_count,
+                progress_bar=progress_bar,
+            )
+            for job in posterior_jobs:
+                print(
+                    f"fit complete: {job.job_id}: {job.job_dir / 'posterior.zarr'}",
+                    file=sys.stderr,
+                )
             print(f"all jobs complete: {base_job_dir}", file=sys.stderr)
         except Exception:
             traceback.print_exc(file=sys.stderr)

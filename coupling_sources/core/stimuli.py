@@ -70,10 +70,10 @@ def generate_stimuli(
     n_rounds: int,
     n_trials_full: int,
     n_trials_partial: int,
-    n_sources: int = 4,
-    sigma: float | jax.Array = 0.55,
-    lam: float | jax.Array = 0.80,
-    coupled: tuple[int, int] = (0, 1),
+    n_sources: int,
+    sigma: float | jax.Array,
+    lam: float | jax.Array,
+    coupled: tuple[int, int],
 ) -> StimulusBatch:
     if n_trials_full < 0 or n_trials_partial < 0:
         raise ValueError("trial counts must be non-negative")

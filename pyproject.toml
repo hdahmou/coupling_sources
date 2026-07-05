@@ -11,9 +11,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
   "arviz[all]>=0.10.0",
-  "asyncssh>=2.24.0",
-  "bokeh>=3.9.1",
-  "dask[distributed]>=2026.6.0",
+  "fabric>=3.2.3",
   "graphviz>=0.21",
   "ipykernel>=7.3.0",
   "ipywidgets>=8.1.8",
@@ -29,3 +27,8 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["coupling_sources*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

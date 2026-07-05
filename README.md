@@ -7,19 +7,16 @@ uv sync
 source .venv/bin/activate
 ```
 
-## Run Parameter Recovery On SSH Workers
-
-Use two terminals.
-
-Terminal 1 keeps the SSH tunnels open:
+Each machine used for SSH execution must already have a clone of this repository and a working Python environment at the configured `python` path.
+The simplest way to update code on remote machines is to run `git pull` inside each clone. If a machine cannot pull from git directly, copy only the tracked project files from your local clone with:
 
 ```bash
-scripts/run_ssh_tunnels.sh --config configs/ssh_machines.json
+git ls-files -z | rsync -az --from0 --files-from=- ./ hdahmou@cpu-03-01.isc.cnrs.fr:/home/hdahmou/Projects/coupling_sources/
 ```
 
-Leave this running while the job runs. Press Ctrl-C here to close all SSH forwards started by the script.
+Change the SSH target and destination path to match the host's `project_path`. This does not copy ignored artifacts, local configs, virtual environments, or `.git/`.
 
-Terminal 2 starts parameter recovery:
+## Run Parameter Recovery
 
 ```bash
 .venv/bin/python scripts/run_parameter_recovery.py \
@@ -27,43 +24,41 @@ Terminal 2 starts parameter recovery:
   --compute-config configs/ssh_machines.json
 ```
 
-The runner asks once for the shared SSH password when the compute config contains active SSH workers.
+If the compute config contains active remote machines, the runner asks once for the shared SSH password. Jobs are independent: the local machine prepares the artifact run, sends assigned job inputs to each remote host over SSH, runs local process pools on those hosts, and fetches result archives when each host finishes.
 
-Open the Dask dashboard during the run at:
+Artifacts are written under `artifacts/<config_name>_<YYYY_MM_DD_HH_MM_SS>/`:
 
-```text
-http://127.0.0.1:8787/status
-```
+- `config.json`, `logs.log`, `prior.zarr`, and `job_grid.csv`
+- `jobs/job_000000/{stimuli,simulation,posterior}.zarr`
+- `worker_logs/<host>/<job_id>.log`
+- `job_status/<job_id>.json`
+- temporary transfer archives under `transfer/`
 
-Artifacts are written under `artifacts/<config_name>_<YYYY_MM_DD_HH_MM_SS>/`: `config.json`, `logs.log`, `prior.zarr`, `job_grid.csv`, and `jobs/job_000000/{stimuli,simulation,posterior}.zarr`.
-
-Remote worker stdout/stderr is written on each active worker machine under `<project_path>/artifacts/<run_name>/worker_logs/<host>/`. Task milestones and exceptions are also forwarded into the local `logs.log`; full raw worker output, including progress-bar writes, stays in the remote task log. The local `logs.log` prints the exact remote log directory before submitting tasks and the exact task log path when a fit finishes. Hosts with `max_concurrent_fits: 0` do not run tasks, so they do not create worker task logs.
-
-Do not open the scheduler TCP address in a browser. `tcp://127.0.0.1:8786` is Dask's binary scheduler endpoint; the HTTP dashboard is `http://127.0.0.1:8787/status`.
+No Dask scheduler, dashboard, worker ports, nanny ports, or SSH tunnel script are used.
 
 ## SSH Compute Config
 
-The default SSH setup runs the Dask scheduler on the current machine and starts only workers over SSH. Because the remote machines cannot connect back directly, tunnel mode pins each remote worker/nanny to deterministic localhost ports and forwards those ports back to the launcher machine:
+Use `configs/ssh_machines.json` for your private machine list. an example is `ssh_machines.example.json`
+
+Fields:
+
+- `host`: SSH target, optionally including the username.
+- `project_path`: absolute path to this repo clone on that machine.
+- `python`: Python executable, relative to `project_path` unless absolute.
+- `max_concurrent_fits`: number of independent posterior fits to run on that host; `0` keeps the host in the config but disables it.
+- `env`: optional environment variables, either global or per machine.
+- `connect_kwargs`: optional Fabric/Paramiko connection options. Do not put clear-text passwords here; the runner prompts at start.
+
+To run only on the current machine, use a local machine entry:
 
 ```json
 {
-  "scheduler_host": "local",
-  "scheduler_options": {
-    "host": "127.0.0.1",
-    "port": 8786,
-    "contact_address": "tcp://127.0.0.1:8786",
-    "dashboard_address": ":8787"
-  },
-  "tunnel": {
-    "enabled": true,
-    "worker_port_start": 39000,
-    "nanny_port_start": 40000
-  }
+  "python": ".venv/bin/python",
+  "machines": [
+    {
+      "host": "local",
+      "max_concurrent_fits": 4
+    }
+  ]
 }
 ```
-
-Each remote machine entry needs a reachable `host`, its own `project_path`, and a usable Python path relative to that project path. The repo and environment must already exist on each remote machine. Set `max_concurrent_fits` to the number of workers to launch on that host; set it to `0` to keep the host in the config but disable it for the current run. Disabled hosts are skipped by Dask, but `scripts/run_ssh_tunnels.sh` still keeps scheduler reverse tunnels for all configured remote hosts.
-
-In tunnel mode, worker slot `N` uses worker port `worker_port_start + N` and nanny port `nanny_port_start + N`. The backend starts one remote worker spec per slot so each worker advertises the matching forwarded localhost address.
-
-Use `scripts/run_ssh_tunnels.sh --dry-run --config configs/ssh_machines.json` to inspect the SSH commands without starting tunnels. If SSH reports `remote port forwarding failed` or `address already in use`, choose unused scheduler and tunnel port ranges in the config.

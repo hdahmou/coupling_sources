@@ -13,10 +13,6 @@ from matplotlib.figure import Figure
 
 from coupling_sources.core.parameters.simulation import SimParams
 from coupling_sources.core.response import ResponseTrace, compute_response_trace
-from coupling_sources.core.summarize_posterior import (
-    parameter_values,
-    summarize_posterior as posterior_summary,
-)
 from coupling_sources.core.simulation import SimulationResult, simulate_choices
 from coupling_sources.core.stimuli import generate_stimuli
 from coupling_sources.utils.angles import circular_difference_deg, optimal_weights
@@ -27,7 +23,6 @@ class EffectSpec:
     label: str
     color: str
     params: SimParams
-    target_kappa_a: float | None = None
 
 
 SOURCE_COLORS = ("#E69F00", "#56B4E9", "#009E73", "#A710DE")
@@ -147,12 +142,11 @@ def _non_coupled_pair_mask(n_sources: int, coupled: tuple[int, int]) -> jax.Arra
 
 def _agreement_targets(
     reports: jax.Array,
-    kappa_a: float | jax.Array,
     n_sources: int,
     coupled: tuple[int, int],
 ) -> tuple[jax.Array, jax.Array]:
     distance = reports[..., :, None] - reports[..., None, :]
-    agreement = jnp.exp(jnp.asarray(kappa_a) * (jnp.cos(distance) - 1.0))
+    agreement = jnp.cos(distance)
     non_coupled_mask = _non_coupled_pair_mask(n_sources, coupled)
     non_coupled_agreement = (
         jnp.sum(agreement * non_coupled_mask, axis=(-2, -1))
@@ -263,34 +257,17 @@ def agreement_sweep_frame(
 
 def fixed_agreement_targets_frame(
     reports: jax.Array,
-    kappa_a: float,
     n_sources: int,
     coupled: tuple[int, int],
 ) -> pd.DataFrame:
     coupled_target, non_coupled_target = _agreement_targets(
-        reports, kappa_a, n_sources, coupled
+        reports, n_sources, coupled
     )
     return pd.DataFrame([
         {"panel": "Coupled pair", "value": float(coupled_target), "color": "0.25"},
         {"panel": "Non-coupled pairs", "value": float(non_coupled_target), "color": "0.45"},
     ])
 
-
-def kernel_targets_frame(
-    reports: jax.Array,
-    specs: Sequence[EffectSpec],
-    n_sources: int,
-    coupled: tuple[int, int],
-) -> pd.DataFrame:
-    rows = []
-    for spec in specs:
-        kappa_a = spec.params.kappa_a if spec.target_kappa_a is None else spec.target_kappa_a
-        targets = _agreement_targets(reports, kappa_a, n_sources, coupled)
-        rows.extend(
-            {"panel": panel, "value": float(value), "color": spec.color}
-            for panel, value in zip(("Coupled pair", "Non-coupled pairs"), targets)
-        )
-    return pd.DataFrame(rows)
 
 
 def _weight_frame(
@@ -328,10 +305,9 @@ def weight_targets_frame(
     specs: Sequence[EffectSpec],
     n_sources: int,
     coupled: tuple[int, int],
-    kappa_a: float = 4.0,
 ) -> pd.DataFrame:
     coupled_agreement, non_coupled_agreement = _agreement_targets(
-        reports, kappa_a, n_sources, coupled
+        reports, n_sources, coupled
     )
     return pd.DataFrame([
         {"panel": panel, "value": float(value), "color": spec.color}
@@ -362,7 +338,7 @@ def _response_error_samples(
     response_mu_deg: np.ndarray,
 ) -> np.ndarray:
     keys = jax.random.split(key, n_runs)
-    params = SimParams(alpha=0.20, gamma=0.80, kappa_p=kappa_p, kappa_a=4.0)
+    params = SimParams(alpha=0.20, gamma=0.80, kappa_p=kappa_p)
     choices = jax.vmap(
         lambda subkey: simulate_choices(subkey, params, source_choices, hidden_source).choices
     )(keys)

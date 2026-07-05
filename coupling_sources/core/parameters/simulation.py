@@ -6,6 +6,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpyro
 import numpyro.distributions as dist
 
 
@@ -18,7 +19,7 @@ class SimParams:
     alpha: Scalar
     gamma: Scalar
     kappa_p: Scalar
-    kappa_a: Scalar
+    c0: Scalar = 0.0
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -41,12 +42,36 @@ class SimParams:
             "alpha": dist.Beta(2.0, 2.0),
             "gamma": dist.Beta(2.0, 2.0),
             "kappa_p": dist.Gamma(concentration=5.0, rate=1.0 / 3.0),
-            "kappa_a": dist.Gamma(concentration=5.0, rate=1.0 / 3.0),
         }
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "SimParams":
-        return cls(**{name: values[name] for name in cls.names()})
+        params = {name: values[name] for name in cls.names() if name in values}
+        params.setdefault("c0", 0.0)
+        return cls(**params)
+
+    @classmethod
+    def sample_prior(cls) -> "SimParams":
+        sampled = {
+            name: numpyro.sample(name, prior)
+            for name, prior in cls.prior_distributions().items()
+        }
+        sampled["c0"] = numpyro.deterministic("c0", jnp.asarray(0.0))
+        return cls(**sampled)
+
+    @classmethod
+    def sample_prior_draws(cls, seed: int, draws: int) -> dict[str, jax.Array]:
+        if draws < 1:
+            raise ValueError("prior draws must be at least 1")
+
+        priors = cls.prior_distributions()
+        keys = jax.random.split(jax.random.PRNGKey(seed), len(priors))
+        samples = {
+            name: jnp.asarray(prior.sample(key, sample_shape=(draws,)))
+            for key, (name, prior) in zip(keys, priors.items(), strict=True)
+        }
+        samples["c0"] = jnp.zeros((draws,))
+        return samples
 
     def as_dict(self) -> dict[str, float]:
         return {name: float(jnp.asarray(getattr(self, name))) for name in self.names()}

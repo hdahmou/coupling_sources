@@ -4,7 +4,6 @@ import jax.scipy.linalg as jsp_linalg
 
 
 def circular_mean(angles: jax.Array, weights: jax.Array) -> jax.Array:
-    weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
     x = jnp.sum(weights * jnp.cos(angles), axis=-1)
     y = jnp.sum(weights * jnp.sin(angles), axis=-1)
     return jnp.arctan2(y, x) % (2 * jnp.pi)

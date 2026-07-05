@@ -29,12 +29,8 @@ def fit_mcmc(
     max_tree_depth: int = 10,
     progress_bar: bool = False,
     model_debug: bool = False,
+    extra_fields: tuple[str, ...] = ("diverging",),
 ) -> numpyro.infer.MCMC:
-    data = {
-        "choices": choices,
-        "source_choices": source_choices,
-        "hidden_source": hidden_source,
-    }
     kernel = numpyro.infer.NUTS(
         choice_model,
         target_accept_prob=target_accept_prob,
@@ -48,7 +44,14 @@ def fit_mcmc(
         chain_method=chain_method,
         progress_bar=progress_bar,
     )
-    mcmc.run(key, data, None, model_debug, extra_fields=("diverging",))
+    mcmc.run(
+        key,
+        choices,
+        source_choices,
+        hidden_source,
+        debug=model_debug,
+        extra_fields=extra_fields,
+    )
     return mcmc
 
 

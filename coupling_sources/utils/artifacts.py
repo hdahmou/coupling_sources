@@ -13,23 +13,10 @@ from coupling_sources.core.parameters.simulation import SimParams
 from coupling_sources.core.simulation import SimulationArtifact, SimulationTrace
 from coupling_sources.core.stimuli import StimulusBatch
 
-STIMULI_ARRAYS = (
-    "truth",
-    "source_choices",
-    "hidden_source",
-    "complete_source_choices",
-    "covariance",
-)
-SIMULATION_ARRAYS = ("choices", "source_choices", "hidden_source")
-
-
-def _array(value: Any) -> np.ndarray:
-    return np.asarray(jax.device_get(value))
-
 
 def _write_arrays(group: Any, arrays: Mapping[str, Any]) -> None:
     for name, value in arrays.items():
-        group.create_array(name, data=_array(value))
+        group.create_array(name, data=np.asarray(jax.device_get(value)))
 
 
 def write_prior_zarr(output: Path, prior_samples: dict[str, Any]) -> None:
@@ -41,25 +28,40 @@ def write_prior_zarr(output: Path, prior_samples: dict[str, Any]) -> None:
 def write_stimuli_zarr(output: Path, stimuli: StimulusBatch) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     root = zarr.open_group(output, mode="w")
-    _write_arrays(root, {name: getattr(stimuli, name) for name in STIMULI_ARRAYS})
+    _write_arrays(
+        root,
+        {field.name: getattr(stimuli, field.name) for field in fields(StimulusBatch)},
+    )
 
 
 def read_stimuli_zarr(path: Path) -> StimulusBatch:
     root = zarr.open_group(path, mode="r")
-    return StimulusBatch(**{name: np.asarray(root[name]) for name in STIMULI_ARRAYS})
+    return StimulusBatch(
+        **{field.name: np.asarray(root[field.name]) for field in fields(StimulusBatch)}
+    )
 
 
 def write_simulation_zarr(output: Path, simulation: SimulationArtifact) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     root = zarr.open_group(output, mode="w")
-    _write_arrays(root, {name: getattr(simulation, name) for name in SIMULATION_ARRAYS})
+    _write_arrays(
+        root,
+        {
+            "choices": simulation.choices,
+            "source_choices": simulation.source_choices,
+            "hidden_source": simulation.hidden_source,
+        },
+    )
     _write_arrays(
         root.create_group("participant_parameters"),
         simulation.participant_parameters.as_dict(),
     )
     _write_arrays(
         root.create_group("trace"),
-        {field.name: getattr(simulation.trace, field.name) for field in fields(SimulationTrace)},
+        {
+            field.name: getattr(simulation.trace, field.name)
+            for field in fields(SimulationTrace)
+        },
     )
 
 
@@ -72,7 +74,11 @@ def read_simulation_zarr(path: Path) -> SimulationArtifact:
         source_choices=np.asarray(root["source_choices"]),
         hidden_source=np.asarray(root["hidden_source"]),
         participant_parameters=SimParams.from_mapping(
-            {name: np.asarray(parameters[name]) for name in SimParams.names()}
+            {
+                name: np.asarray(parameters[name])
+                for name in SimParams.names()
+                if name in parameters
+            }
         ),
         trace=SimulationTrace(
             **{
@@ -109,6 +115,6 @@ def write_posterior_zarr(
     samples_group.attrs["dims"] = ["chain", "draw"]
     samples_group.attrs["dtype"] = "float16"
     for parameter, values in samples.items():
-        data = _array(values).astype(np.float16, copy=False)
+        data = np.asarray(jax.device_get(values)).astype(np.float16, copy=False)
         chunks = (1, data.shape[1]) if data.ndim == 2 else data.shape
         samples_group.create_array(parameter, data=data, chunks=chunks)

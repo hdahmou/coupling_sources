@@ -2,13 +2,13 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import numpyro.distributions as dist
 from jax.scipy.stats import vonmises
 
 from coupling_sources.utils.angles import centered_angle
 from coupling_sources.core.parameters.simulation import SimParams
 from coupling_sources.core.response import compute_response_trace
 from coupling_sources.core.stimuli import StimulusBatch
-from coupling_sources.utils.vonmises import sample_vonmises
 
 
 @dataclass(frozen=True)
@@ -51,13 +51,10 @@ def simulate_choices(
     if hidden_source.shape != source_choices.shape[1:]:
         raise ValueError("hidden_source must have shape (round, time)")
     flow = compute_response_trace(params, source_choices, hidden_source)
-    n_rounds, n_trials = hidden_source.shape
-    keys = jax.random.split(key, n_rounds * n_trials).reshape(n_rounds, n_trials, 2)
-    choices = jax.vmap(
-        lambda keys_i, mu_i: jax.vmap(
-            lambda subkey, mu_t: sample_vonmises(subkey, mu_t, params.kappa_p)
-        )(keys_i, mu_i)
-    )(keys, flow.response_mean_angle)
+    choices = (
+        dist.VonMises(centered_angle(flow.response_mean_angle), params.kappa_p).sample(key)
+        % (2 * jnp.pi)
+    )
 
     trace = SimulationTrace(
         response_mean=flow.response_mean_angle,
