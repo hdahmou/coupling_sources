@@ -15,13 +15,11 @@ from coupling_sources.compute.backend import (
     add_prompted_ssh_password,
     run_posterior_jobs,
 )
-from coupling_sources.core.parameters.mcmc import MCMCParams
-from coupling_sources.core.parameters.simulation import SimParams
-from coupling_sources.core.simulation import generate_simulation
+from coupling_sources.core.data import MCMCSpecs
+from coupling_sources.core.priors import sample_coupling_parameter_draws
 from coupling_sources.core.stimuli import generate_stimulus
 from coupling_sources.utils.artifacts import (
     write_prior_zarr,
-    write_simulation_zarr,
     write_stimuli_zarr,
 )
 from coupling_sources.workflows.job_grid import GridRun, build_run_grid, write_job_grid
@@ -47,40 +45,6 @@ def _append_run_log(log_path: Path):
             os.close(stdout_fd)
             os.close(stderr_fd)
 
-
-def _xla_host_device_count(mcmc_config: dict[str, object]) -> int | None:
-    configured = mcmc_config.get("host_device_count")
-    if configured is not None:
-        count = int(configured)
-    elif (
-        mcmc_config.get("chain_method") == "parallel"
-        and int(mcmc_config["num_chains"]) > 1
-    ):
-        count = int(mcmc_config["num_chains"])
-    else:
-        return None
-
-    if count < 1:
-        raise ValueError("host_device_count must be a positive integer")
-    return count
-
-
-def _set_worker_xla_host_device_count(
-    compute_config: dict[str, object], count: int | None
-) -> None:
-    if count is None:
-        return
-
-    env = compute_config.setdefault("env", {})
-    if not isinstance(env, dict):
-        raise ValueError("compute config env must be an object")
-
-    flags = re.sub(
-        r"--xla_force_host_platform_device_count=\S+", "", str(env.get("XLA_FLAGS", ""))
-    ).split()
-    env["XLA_FLAGS"] = " ".join(
-        [f"--xla_force_host_platform_device_count={count}", *flags]
-    )
 
 
 def _job_name_from_config(config_path: Path, started_at: datetime) -> str:
@@ -108,12 +72,13 @@ def _prepare_job(
 
     stimuli = generate_stimulus(run.stimuli)
     write_stimuli_zarr(job_dir / "stimuli.zarr", stimuli)
-    simulation = generate_simulation(
-        seed=simulation_seed,
-        params=run.simulation,
-        stimuli=stimuli,
+    (job_dir / "simulation_parameters.json").write_text(
+        json.dumps(
+            {"seed": simulation_seed, "parameters": run.simulation},
+            indent=2,
+        )
+        + "\n"
     )
-    write_simulation_zarr(job_dir / "simulation.zarr", simulation)
     print(f"prepared {job_dir}", file=sys.stderr)
 
     return PosteriorJob(job_id=run.run_id, job_dir=job_dir)
@@ -146,12 +111,18 @@ def run_parameter_recovery(
             simulation_config = config["simulation"]
             simulation_seed = simulation_config["seed"]
             mcmc_config = config["mcmc"]
-            host_device_count = _xla_host_device_count(mcmc_config)
-            _set_worker_xla_host_device_count(compute_config, host_device_count)
-            mcmc_params = MCMCParams.from_mapping(mcmc_config)
+            mcmc = MCMCSpecs(
+                seed=int(mcmc_config["seed"]),
+                num_warmup=int(mcmc_config["num_warmup"]),
+                num_samples=int(mcmc_config["num_samples"]),
+                num_chains=int(mcmc_config["num_chains"]),
+                chain_method=str(mcmc_config["chain_method"]),
+                target_accept_prob=float(mcmc_config["target_accept_prob"]),
+                max_tree_depth=int(mcmc_config["max_tree_depth"]),
+            )
             progress_bar = bool(mcmc_config["progress_bar"])
 
-            prior_samples = SimParams.sample_prior_draws(
+            prior_samples = sample_coupling_parameter_draws(
                 diagnostic_prior_seed,
                 diagnostic_prior_draws,
             )
@@ -171,8 +142,7 @@ def run_parameter_recovery(
                 compute_config=compute_config,
                 run_dir=base_job_dir,
                 jobs=posterior_jobs,
-                mcmc_params=mcmc_params,
-                host_device_count=host_device_count,
+                mcmc=mcmc,
                 progress_bar=progress_bar,
             )
             for job in posterior_jobs:

@@ -1,186 +1,66 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from collections.abc import Mapping
+from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
-import numpyro.diagnostics as diagnostics
 import numpyro
-import numpyro.infer.mcmc as numpyro_mcmc
-import numpyro.util as numpyro_util
 
-from coupling_sources.core.model import choice_model
-from coupling_sources.core.parameters.mcmc import MCMCParams
-from coupling_sources.core.parameters.simulation import SimParams
-from coupling_sources.core.simulation import SimulationArtifact
-
-
-def fit_mcmc(
-    key: jax.Array,
-    choices: jax.Array,
-    source_choices: jax.Array,
-    hidden_source: jax.Array,
-    num_warmup: int = 300,
-    num_samples: int = 600,
-    num_chains: int = 1,
-    chain_method: str = "parallel",
-    target_accept_prob: float = 0.85,
-    max_tree_depth: int = 10,
-    progress_bar: bool = False,
-    model_debug: bool = False,
-    extra_fields: tuple[str, ...] = ("diverging",),
-) -> numpyro.infer.MCMC:
-    kernel = numpyro.infer.NUTS(
-        choice_model,
-        target_accept_prob=target_accept_prob,
-        max_tree_depth=max_tree_depth,
-    )
-    mcmc = numpyro.infer.MCMC(
-        kernel,
-        num_warmup=num_warmup,
-        num_samples=num_samples,
-        num_chains=num_chains,
-        chain_method=chain_method,
-        progress_bar=progress_bar,
-    )
-    mcmc.run(
-        key,
-        choices,
-        source_choices,
-        hidden_source,
-        debug=model_debug,
-        extra_fields=extra_fields,
-    )
-    return mcmc
+from coupling_sources.core.data import MCMCSpecs, StimulusBatch
+from coupling_sources.core.diagnostics import mcmc_diagnostics
+from coupling_sources.core.model import model_coupling
+from coupling_sources.core.priors import coupling_parameter_sites
+from coupling_sources.core.simulator import simulate_coupling
+from coupling_sources.utils.progress import labeled_progress_bar
 
 
-class _LabeledTqdm:
-    def __init__(self, bar: object, label: str):
-        self.bar = bar
-        self.label = label
-
-    def set_description(self, description: object, *args: object, **kwargs: object) -> object:
-        text = str(description).strip()
-        labeled = f"[{self.label}] {text}" if text else f"[{self.label}]"
-        return self.bar.set_description(labeled, *args, **kwargs)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self.bar, name)
-
-
-@contextmanager
-def _labeled_progress_bar(label: str | None):
-    if label is None:
-        yield
-        return
-
-    original_fori_collect = numpyro_mcmc.fori_collect
-    original_tqdm_auto = numpyro_util.tqdm_auto
-
-    def with_label(description: object) -> str:
-        text = str(description).strip()
-        return f"[{label}] {text}" if text else f"[{label}]"
-
-    def fori_collect_with_label(*args: object, **kwargs: object) -> object:
-        original_desc = kwargs.get("progbar_desc", lambda _: "")
-
-        def progbar_desc(index: object) -> str:
-            return with_label(original_desc(index))
-
-        kwargs["progbar_desc"] = progbar_desc
-        return original_fori_collect(*args, **kwargs)
-
-    def tqdm_auto_with_label(*args: object, **kwargs: object) -> _LabeledTqdm:
-        return _LabeledTqdm(original_tqdm_auto(*args, **kwargs), label)
-
-    numpyro_mcmc.fori_collect = fori_collect_with_label
-    numpyro_util.tqdm_auto = tqdm_auto_with_label
-    try:
-        yield
-    finally:
-        numpyro_mcmc.fori_collect = original_fori_collect
-        numpyro_util.tqdm_auto = original_tqdm_auto
-
-
-def _validate_parallel_chains(
-    *, num_chains: int, chain_method: str, host_device_count: int | None = None
-) -> None:
-    if host_device_count is not None and host_device_count < 1:
-        raise ValueError("host_device_count must be a positive integer")
-    if chain_method != "parallel" or num_chains <= 1:
-        return
-
-    available = jax.local_device_count()
-    if available < num_chains:
-        raise RuntimeError(
-            f"parallel MCMC requested {num_chains} chains, but JAX sees only "
-            f"{available} local device(s). Configure host_device_count before workers "
-            "import JAX so chains do not run sequentially."
-        )
-
-
-def _mcmc_diagnostics(mcmc: object) -> dict[str, object]:
-    grouped_samples = mcmc.get_samples(group_by_chain=True)
-    parameter_names = SimParams.names()
-    parameter_summary = diagnostics.summary(
-        {name: grouped_samples[name] for name in parameter_names},
-        group_by_chain=True,
-    )
-    extra_fields = mcmc.get_extra_fields(group_by_chain=True)
-    divergences = extra_fields.get("diverging")
-    n_divergences = None if divergences is None else int(np.asarray(divergences).sum())
-    return {
-        "parameters": {
-            parameter: {
-                "r_hat": float(np.asarray(stats["r_hat"])),
-                "ess": float(np.asarray(stats["n_eff"])),
-            }
-            for parameter, stats in parameter_summary.items()
-        },
-        "divergences": {
-            "has_divergences": None if n_divergences is None else bool(n_divergences),
-            "n_divergences": n_divergences,
-        },
-    }
-
-
-def fit_posterior(
+def run_inference(
     *,
-    simulation: SimulationArtifact,
-    params: MCMCParams,
-    host_device_count: int | None,
+    stimuli: StimulusBatch,
+    simulation_parameters: Mapping[str, Any],
+    simulation_seed: int,
+    mcmc: MCMCSpecs,
     progress_bar: bool,
     progress_label: str | None = None,
 ) -> dict[str, object]:
-    _validate_parallel_chains(
-        num_chains=params.num_chains,
-        chain_method=params.chain_method,
-        host_device_count=host_device_count,
+    """Run the full pipeline: stimuli -> simulator -> NumPyro MCMC."""
+    simulation = simulate_coupling(
+        seed=simulation_seed,
+        batch=stimuli,
+        parameters=simulation_parameters,
     )
 
-    choices = jnp.asarray(simulation.choices)
-    source_choices = jnp.asarray(simulation.source_choices)
-    hidden_source = jnp.asarray(simulation.hidden_source)
-    with _labeled_progress_bar(progress_label if progress_bar else None):
-        mcmc = fit_mcmc(
-            jax.random.PRNGKey(params.seed),
-            choices,
-            source_choices,
-            hidden_source,
-            num_warmup=params.num_warmup,
-            num_samples=params.num_samples,
-            num_chains=params.num_chains,
-            chain_method=params.chain_method,
-            target_accept_prob=params.target_accept_prob,
-            max_tree_depth=params.max_tree_depth,
-            progress_bar=progress_bar,
-        )
-    chain_samples = mcmc.get_samples(group_by_chain=True)
-    parameter_names = SimParams.names()
+    kernel = numpyro.infer.NUTS(
+        model_coupling,
+        target_accept_prob=mcmc.target_accept_prob,
+        max_tree_depth=mcmc.max_tree_depth,
+    )
+
+    def postprocess_fit_samples(latent_samples: dict[str, Any]) -> dict[str, Any]:
+        samples = kernel.postprocess_fn((simulation,), {})(latent_samples)
+        return {
+            name: value for name, value in samples.items() if not name.startswith("~")
+        }
+
+    mcmc_runner = numpyro.infer.MCMC(
+        kernel,
+        num_warmup=mcmc.num_warmup,
+        num_samples=mcmc.num_samples,
+        num_chains=mcmc.num_chains,
+        chain_method=mcmc.chain_method,
+        progress_bar=progress_bar,
+        postprocess_fn=postprocess_fit_samples,
+    )
+    with labeled_progress_bar(progress_label if progress_bar else None):
+        mcmc_runner.run(jax.random.PRNGKey(mcmc.seed), simulation)
+
+    chain_samples = mcmc_runner.get_samples(group_by_chain=True)
+    parameter_names = coupling_parameter_sites()
     return {
+        "simulation": simulation,
         "chain_method": mcmc.chain_method,
-        "diagnostics": _mcmc_diagnostics(mcmc),
+        "diagnostics": mcmc_diagnostics(mcmc_runner),
         "samples": {
             name: np.asarray(jax.device_get(chain_samples[name]), dtype=np.float16)
             for name in parameter_names

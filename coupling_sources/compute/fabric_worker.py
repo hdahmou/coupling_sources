@@ -15,9 +15,9 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
-from coupling_sources.core.inference import fit_posterior
-from coupling_sources.core.parameters.mcmc import MCMCParams
-from coupling_sources.utils.artifacts import read_simulation_zarr, write_posterior_zarr
+from coupling_sources.core.data import MCMCSpecs
+from coupling_sources.core.inference import run_inference
+from coupling_sources.utils.artifacts import read_stimuli_zarr, write_posterior_zarr, write_simulation_zarr
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -43,8 +43,7 @@ def run_assigned_jobs(
     assignment = json.loads(assigned_jobs_path.read_text())
     jobs = list(assignment["jobs"])
     worker_label = _safe_path_part(assignment.get("worker_label", "local"))
-    mcmc = dict(assignment["mcmc"])
-    host_device_count = assignment.get("host_device_count")
+    mcmc = MCMCSpecs(**assignment["mcmc"])
     progress_bar = bool(assignment.get("progress_bar", False))
 
     print(
@@ -65,7 +64,6 @@ def run_assigned_jobs(
                 str(run_dir),
                 job_id,
                 mcmc,
-                host_device_count,
                 progress_bar,
                 worker_label,
             ): job_id
@@ -100,8 +98,7 @@ def run_assigned_jobs(
 def _run_one_job(
     run_dir: str,
     job_id: str,
-    mcmc_mapping: dict[str, Any],
-    host_device_count: int | None,
+    mcmc: MCMCSpecs,
     progress_bar: bool,
     worker_label: str,
 ) -> dict[str, Any]:
@@ -114,18 +111,20 @@ def _run_one_job(
         with redirect_stdout(log_file), redirect_stderr(log_file):
             print(f"fit start: {job_id}", flush=True)
             try:
-                params = MCMCParams.from_mapping(mcmc_mapping)
-                posterior = fit_posterior(
-                    simulation=read_simulation_zarr(job_dir / "simulation.zarr"),
-                    params=params,
-                    host_device_count=host_device_count,
+                simulation_config = json.loads((job_dir / "simulation_parameters.json").read_text())
+                result = run_inference(
+                    stimuli=read_stimuli_zarr(job_dir / "stimuli.zarr"),
+                    simulation_parameters=simulation_config["parameters"],
+                    simulation_seed=int(simulation_config["seed"]),
+                    mcmc=mcmc,
                     progress_bar=progress_bar,
                     progress_label=job_id,
                 )
+                write_simulation_zarr(job_dir / "simulation.zarr", result["simulation"])
                 write_posterior_zarr(
                     job_dir / "posterior.zarr",
-                    diagnostics=posterior["diagnostics"],
-                    samples=posterior["samples"],
+                    diagnostics=result["diagnostics"],
+                    samples=result["samples"],
                 )
                 print(f"fit done: {job_id}", flush=True)
                 return {
@@ -135,7 +134,7 @@ def _run_one_job(
                     "finished_at": datetime.now().isoformat(timespec="seconds"),
                     "posterior_path": str(Path("jobs") / job_id / "posterior.zarr"),
                     "log_path": str(log_path.relative_to(run_path)),
-                    "chain_method": posterior["chain_method"],
+                    "chain_method": result["chain_method"],
                 }
             except Exception:
                 error = traceback.format_exc()

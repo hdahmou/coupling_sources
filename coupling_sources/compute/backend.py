@@ -13,8 +13,7 @@ from pathlib import Path
 
 from fabric import Connection
 
-from coupling_sources.core.parameters.mcmc import MCMCParams
-
+from coupling_sources.core.data import MCMCSpecs
 
 LOCAL_HOSTS = {"local", "localhost", "127.0.0.1", "::1"}
 DEFAULT_REMOTE_PYTHON = ".venv/bin/python"
@@ -149,8 +148,7 @@ def run_posterior_jobs(
     compute_config: dict[str, object],
     run_dir: Path,
     jobs: Sequence[PosteriorJob],
-    mcmc_params: MCMCParams,
-    host_device_count: int | None,
+    mcmc: MCMCSpecs,
     progress_bar: bool,
 ) -> None:
     if not jobs:
@@ -167,8 +165,7 @@ def run_posterior_jobs(
                 assignment,
                 config,
                 run_dir,
-                mcmc_params,
-                host_device_count,
+                mcmc,
                 progress_bar,
             )
             for assignment in assignments
@@ -248,8 +245,7 @@ def _run_assignment(
     assignment: MachineAssignment,
     config: ComputeConfig,
     run_dir: Path,
-    mcmc_params: MCMCParams,
-    host_device_count: int | None,
+    mcmc: MCMCSpecs,
     progress_bar: bool,
 ) -> HostResult:
     if assignment.machine.is_local:
@@ -257,16 +253,14 @@ def _run_assignment(
             assignment,
             config,
             run_dir,
-            mcmc_params,
-            host_device_count,
+            mcmc,
             progress_bar,
         )
     return _run_remote_machine(
         assignment,
         config,
         run_dir,
-        mcmc_params,
-        host_device_count,
+        mcmc,
         progress_bar,
     )
 
@@ -294,8 +288,7 @@ def _write_assignment(
     run_dir: Path,
     machine: Machine,
     jobs: Sequence[PosteriorJob],
-    mcmc_params: MCMCParams,
-    host_device_count: int | None,
+    mcmc: MCMCSpecs,
     progress_bar: bool,
 ) -> Path:
     transfer_dir = run_dir / "transfer"
@@ -304,8 +297,7 @@ def _write_assignment(
     assignment = {
         "worker_label": _safe_path_part(machine.host),
         "jobs": [job.job_id for job in jobs],
-        "mcmc": asdict(mcmc_params),
-        "host_device_count": host_device_count,
+        "mcmc": asdict(mcmc),
         "progress_bar": progress_bar,
     }
     assignment_path.write_text(json.dumps(assignment, indent=2) + "\n")
@@ -326,9 +318,12 @@ def _make_input_archive(
             archive.add(path, arcname=path.relative_to(run_dir))
         for job in jobs:
             stimuli_path = job.job_dir / "stimuli.zarr"
-            simulation_path = job.job_dir / "simulation.zarr"
+            simulation_parameters_path = job.job_dir / "simulation_parameters.json"
             archive.add(stimuli_path, arcname=stimuli_path.relative_to(run_dir))
-            archive.add(simulation_path, arcname=simulation_path.relative_to(run_dir))
+            archive.add(
+                simulation_parameters_path,
+                arcname=simulation_parameters_path.relative_to(run_dir),
+            )
     return archive_path
 
 
@@ -383,8 +378,7 @@ def _run_remote_machine(
     assignment: MachineAssignment,
     config: ComputeConfig,
     run_dir: Path,
-    mcmc_params: MCMCParams,
-    host_device_count: int | None,
+    mcmc: MCMCSpecs,
     progress_bar: bool,
 ) -> HostResult:
     machine = assignment.machine
@@ -393,8 +387,7 @@ def _run_remote_machine(
         run_dir=run_dir,
         machine=machine,
         jobs=jobs,
-        mcmc_params=mcmc_params,
-        host_device_count=host_device_count,
+        mcmc=mcmc,
         progress_bar=progress_bar,
     )
     input_archive = _make_input_archive(
@@ -440,8 +433,7 @@ def _run_local_machine(
     assignment: MachineAssignment,
     config: ComputeConfig,
     run_dir: Path,
-    mcmc_params: MCMCParams,
-    host_device_count: int | None,
+    mcmc: MCMCSpecs,
     progress_bar: bool,
 ) -> HostResult:
     from coupling_sources.compute.fabric_worker import run_assigned_jobs
@@ -452,8 +444,7 @@ def _run_local_machine(
         run_dir=run_dir,
         machine=machine,
         jobs=jobs,
-        mcmc_params=mcmc_params,
-        host_device_count=host_device_count,
+        mcmc=mcmc,
         progress_bar=progress_bar,
     )
 

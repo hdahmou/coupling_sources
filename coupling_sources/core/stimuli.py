@@ -1,114 +1,76 @@
-from dataclasses import dataclass
+from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
 
-from coupling_sources.core.parameters.stimuli import StimuliParams
+from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, NO_HIDDEN_SOURCE, TRUTH_ESTIMATION
+from coupling_sources.core.data import StimulusBatch, StimulusMetadata, StimulusSpec
 
 
-@dataclass(frozen=True)
-class StimulusBatch:
-    truth: jax.Array
-    source_choices: jax.Array
-    hidden_source: jax.Array
-    complete_source_choices: jax.Array
-    covariance: jax.Array
-
-
-def _stimulus_covariance(
-    n_sources: int, sigma: float | jax.Array, lam: float | jax.Array, coupled: tuple[int, int]
-) -> jax.Array:
-    corr = jnp.eye(n_sources)
-    i, j = coupled
-    corr = corr.at[i, j].set(lam).at[j, i].set(lam)
-    return sigma**2 * corr
-
-
-def _hide_random_source_round(
-    key: jax.Array,
-    source_choices: jax.Array,
-    n_trials_full: int,
-    n_trials_partial: int,
-) -> tuple[jax.Array, jax.Array]:
-    n_sources, n_trials = source_choices.shape
-    if n_trials != n_trials_full + n_trials_partial:
-        raise ValueError(
-            f"source_choices has {n_trials} trials, expected "
-            f"{n_trials_full} + {n_trials_partial}"
-        )
-
-    key_trial, key_source = jax.random.split(key)
-    is_hidden = jax.random.permutation(key_trial, jnp.arange(n_trials) >= n_trials_full)
-    hidden_idx = jax.random.randint(key_source, (n_trials,), 0, n_sources)
-    trial_idx = jnp.arange(n_trials)
-    hidden_source = jnp.where(is_hidden, hidden_idx.astype(float), jnp.nan)
-    hidden_value = jnp.where(is_hidden, jnp.nan, source_choices[hidden_idx, trial_idx])
-    return source_choices.at[hidden_idx, trial_idx].set(hidden_value), hidden_source
-
-
-def _hide_random_sources(
-    key: jax.Array,
-    source_choices: jax.Array,
-    n_trials_full: int,
-    n_trials_partial: int,
-) -> tuple[jax.Array, jax.Array]:
-    source_choices = jnp.asarray(source_choices)
-    if source_choices.ndim != 3:
-        raise ValueError("source_choices must have shape (source, round, time)")
-    choices_by_round = jnp.swapaxes(source_choices, 0, 1)
-    keys = jax.random.split(key, choices_by_round.shape[0])
-    masked_by_round, hidden_source = jax.vmap(
-        lambda subkey, choices_i: _hide_random_source_round(
-            subkey, choices_i, n_trials_full, n_trials_partial
-        )
-    )(keys, choices_by_round)
-    return jnp.swapaxes(masked_by_round, 0, 1), hidden_source
-
-
-def generate_stimuli(
-    key: jax.Array,
-    n_rounds: int,
-    n_trials_full: int,
-    n_trials_partial: int,
-    n_sources: int,
-    sigma: float | jax.Array,
-    lam: float | jax.Array,
-    coupled: tuple[int, int],
-) -> StimulusBatch:
-    if n_trials_full < 0 or n_trials_partial < 0:
-        raise ValueError("trial counts must be non-negative")
-
-    n_trials = n_trials_full + n_trials_partial
-    key_theta, key_error, key_hide = jax.random.split(key, 3)
-    cov = _stimulus_covariance(n_sources, sigma, lam, coupled)
-    cov_root = jnp.linalg.cholesky(cov)
-    truth = jax.random.uniform(key_theta, (n_rounds, n_trials), minval=0.0, maxval=2 * jnp.pi)
-    error = jax.random.normal(key_error, (n_rounds, n_trials, n_sources)) @ cov_root.T
-    reports = (truth[..., None] + error) % (2 * jnp.pi)
-    complete_source_choices = jnp.moveaxis(reports, -1, 0)
-    source_choices, hidden_source = _hide_random_sources(
-        key_hide,
-        complete_source_choices,
-        n_trials_full=n_trials_full,
-        n_trials_partial=n_trials_partial,
+def generate_stimulus(spec: StimulusSpec) -> StimulusBatch:
+    n_trials = spec.n_trials_full + spec.n_trials_partial
+    key_truth, key_error, key_hide_trial, key_hide_source = jax.random.split(
+        jax.random.PRNGKey(spec.seed), 4
     )
+
+    corr = jnp.eye(spec.n_sources)
+    source_a, source_b = spec.coupled_sources
+    corr = corr.at[source_a, source_b].set(spec.lam)
+    corr = corr.at[source_b, source_a].set(spec.lam)
+    covariance = spec.sigma**2 * corr
+
+    truth = jax.random.uniform(
+        key_truth,
+        (spec.n_rounds, n_trials),
+        minval=0.0,
+        maxval=2 * jnp.pi,
+    )
+    error = (
+        jax.random.normal(key_error, (spec.n_rounds, n_trials, spec.n_sources))
+        @ jnp.linalg.cholesky(covariance).T
+    )
+    complete_reports_by_round = (truth[..., None] + error) % (2 * jnp.pi)
+
+    hide_order = jnp.argsort(
+        jax.random.uniform(key_hide_trial, (spec.n_rounds, n_trials)), axis=-1
+    )
+    hidden_trials = jnp.zeros((spec.n_rounds, n_trials), dtype=bool)
+    hidden_trials = hidden_trials.at[
+        jnp.arange(spec.n_rounds)[:, None], hide_order[:, :spec.n_trials_partial]
+    ].set(True)
+    hidden_index = jax.random.randint(
+        key_hide_source,
+        (spec.n_rounds, n_trials),
+        minval=0,
+        maxval=spec.n_sources,
+    )
+    hidden_source_by_round = jnp.where(hidden_trials, hidden_index, NO_HIDDEN_SOURCE).astype(jnp.int32)
+
+    round_index = jnp.arange(spec.n_rounds)[:, None]
+    trial_index = jnp.arange(n_trials)[None, :]
+    hidden_values = jnp.where(
+        hidden_trials,
+        jnp.nan,
+        complete_reports_by_round[round_index, trial_index, hidden_index],
+    )
+    visible_reports_by_round = complete_reports_by_round.at[
+        round_index, trial_index, hidden_index
+    ].set(hidden_values)
+
+    trial_type_by_round = jnp.where(
+        hidden_source_by_round >= 0, HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
+    ).astype(jnp.int32)
+    visible_reports = visible_reports_by_round[None, ...]
+    trial_type = trial_type_by_round[None, ...]
     return StimulusBatch(
-        truth=truth,
-        source_choices=source_choices,
-        hidden_source=hidden_source,
-        complete_source_choices=complete_source_choices,
-        covariance=cov,
-    )
-
-
-def generate_stimulus(params: StimuliParams) -> StimulusBatch:
-    return generate_stimuli(
-        jax.random.PRNGKey(params.seed),
-        n_rounds=params.n_rounds,
-        n_trials_full=params.n_trials_full,
-        n_trials_partial=params.n_trials_partial,
-        n_sources=params.n_sources,
-        sigma=params.sigma,
-        lam=params.lam,
-        coupled=params.coupled_sources,
+        visible_reports=visible_reports,
+        hidden_source=hidden_source_by_round[None, ...],
+        trial_type=trial_type,
+        valid_trials=jnp.ones_like(trial_type, dtype=bool),
+        metadata=StimulusMetadata(
+            complete_reports=complete_reports_by_round[None, ...],
+            true_direction=truth[None, ...],
+            source_choices=visible_reports,
+            stimulus_covariance=covariance,
+        ),
     )
