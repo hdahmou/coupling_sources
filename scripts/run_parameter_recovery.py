@@ -8,6 +8,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse
+import signal
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -22,13 +23,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _raise_keyboard_interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv)
-    return run_parameter_recovery(
-        config_path=args.config,
-        compute_config_path=args.compute_config,
-        artifacts_root=args.artifacts_root,
-    )
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    try:
+        args = parse_args(argv)
+        return run_parameter_recovery(
+            config_path=args.config,
+            compute_config_path=args.compute_config,
+            artifacts_root=args.artifacts_root,
+        )
+    except KeyboardInterrupt:
+        print("parameter recovery interrupted; shutting down workers", file=sys.stderr)
+        return 130
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

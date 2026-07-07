@@ -24,8 +24,8 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
 
     priors = coupling_prior_distributions()
     alpha = numpyro.sample("alpha", priors["alpha"])
-    beta_y = numpyro.sample("beta_y", priors["beta_y"])
-    beta_z = numpyro.sample("beta_z", priors["beta_z"])
+    gain_y = numpyro.sample("gain_y", priors["gain_y"])
+    gain_z = numpyro.sample("gain_z", priors["gain_z"])
     kappa = numpyro.sample("kappa", priors["kappa"])
     initial_pair_score = numpyro.deterministic("~initial_pair_scores", jnp.zeros(()))
 
@@ -116,13 +116,13 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
                 truth_weights = numpyro.deterministic(
                     f"~truth_weights_{suffix}",
                     jax.nn.softmax(
-                        truth_source_scores / beta_y + log_visible_sources, axis=-1
+                        truth_source_scores * gain_y + log_visible_sources, axis=-1
                     ),
                 )
                 probe_weights = numpyro.deterministic(
                     f"~probe_weights_{suffix}",
                     jax.nn.softmax(
-                        probe_source_scores / beta_z + log_visible_sources, axis=-1
+                        probe_source_scores * gain_z + log_visible_sources, axis=-1
                     ),
                 )
 

@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpyro.distributions as dist
 from numpyro.distributions import transforms
 
-COUPLING_PARAMETER_SITES = ("alpha", "beta_y", "beta_z", "kappa")
+COUPLING_PARAMETER_SITES = ("alpha", "gain_y", "gain_z", "kappa")
 COUPLING_SIMULATION_PARAMETER_SITES = (*COUPLING_PARAMETER_SITES, "c0")
 
 
@@ -21,20 +21,8 @@ def coupling_prior_distributions() -> dict[str, dist.Distribution]:
             dist.Normal(0.0, 1.5),
             transforms.SigmoidTransform(),
         ),
-        "beta_y": dist.TransformedDistribution(
-            dist.Normal(0.0, 1.0),
-            [
-                transforms.SigmoidTransform(),
-                transforms.AffineTransform(loc=0.0, scale=10.0),
-            ],
-        ),
-        "beta_z": dist.TransformedDistribution(
-            dist.Normal(0.0, 1.0),
-            [
-                transforms.SigmoidTransform(),
-                transforms.AffineTransform(loc=0.0, scale=10.0),
-            ],
-        ),
+        "gain_y": dist.LogNormal(0.0, 0.9),
+        "gain_z": dist.LogNormal(0.0, 0.9),
         "kappa": dist.LogNormal(log(8.0), 1.0),
     }
 

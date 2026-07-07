@@ -23,8 +23,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli Zarr directory.")
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--alpha", type=float, required=True)
-    parser.add_argument("--beta-y", type=float, required=True)
-    parser.add_argument("--beta-z", type=float, required=True)
+    parser.add_argument("--gain-y", type=float, required=True)
+    parser.add_argument("--gain-z", type=float, required=True)
     parser.add_argument("--kappa", type=float, required=True)
     parser.add_argument("--output", type=Path, required=True, help="Output Zarr directory.")
     return parser.parse_args(argv)
@@ -38,8 +38,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         batch=stimuli,
         parameters={
             "alpha": args.alpha,
-            "beta_y": args.beta_y,
-            "beta_z": args.beta_z,
+            "gain_y": args.gain_y,
+            "gain_z": args.gain_z,
             "kappa": args.kappa,
         },
     )

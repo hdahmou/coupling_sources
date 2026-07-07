@@ -24,6 +24,9 @@ from coupling_sources.utils.artifacts import (
 )
 from coupling_sources.workflows.job_grid import GridRun, build_run_grid, write_job_grid
 
+PARALLEL_CHAINS_PER_FIT_KEY = "parallel_chains_per_fit"
+LEGACY_HOST_DEVICE_COUNT_KEY = "host_device_count"
+
 
 @contextmanager
 def _append_run_log(log_path: Path):
@@ -84,6 +87,25 @@ def _prepare_job(
     return PosteriorJob(job_id=run.run_id, job_dir=job_dir)
 
 
+def _parallel_chains_per_fit(mcmc_config: dict[str, object]) -> int | None:
+    value = mcmc_config.get(PARALLEL_CHAINS_PER_FIT_KEY)
+    legacy_value = mcmc_config.get(LEGACY_HOST_DEVICE_COUNT_KEY)
+    if value is not None and legacy_value is not None:
+        raise ValueError(
+            f"mcmc.{PARALLEL_CHAINS_PER_FIT_KEY} replaces "
+            f"mcmc.{LEGACY_HOST_DEVICE_COUNT_KEY}; use only one"
+        )
+
+    configured = value if value is not None else legacy_value
+    if configured is None:
+        return None
+
+    count = int(configured)
+    if count < 1:
+        raise ValueError(f"mcmc.{PARALLEL_CHAINS_PER_FIT_KEY} must be positive")
+    return count
+
+
 def run_parameter_recovery(
     *,
     config_path: Path,
@@ -120,6 +142,7 @@ def run_parameter_recovery(
                 target_accept_prob=float(mcmc_config["target_accept_prob"]),
                 max_tree_depth=int(mcmc_config["max_tree_depth"]),
             )
+            parallel_chains_per_fit = _parallel_chains_per_fit(mcmc_config)
             progress_bar = bool(mcmc_config["progress_bar"])
 
             prior_samples = sample_coupling_parameter_draws(
@@ -143,6 +166,7 @@ def run_parameter_recovery(
                 run_dir=base_job_dir,
                 jobs=posterior_jobs,
                 mcmc=mcmc,
+                parallel_chains_per_fit=parallel_chains_per_fit,
                 progress_bar=progress_bar,
             )
             for job in posterior_jobs:

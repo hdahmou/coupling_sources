@@ -17,44 +17,17 @@ git ls-files -z | rsync -az --from0 --files-from=- ./ hdahmou@cpu-03-01.isc.cnrs
 Change the SSH target and destination path to match the host's `project_path`. This does not copy ignored artifacts, local configs, virtual environments, or `.git/`.
 
 
-## Model layout
-
-The active NumPyro model is `coupling_sources/core/model.py`. It is the only model implementation used for graph rendering, simulation checks, and MCMC. The model keeps source-level reports with shape `(participant, round, trial, source)` and updates learned pair scores with an explicit Python loop over trials. Intermediate states are `numpyro.deterministic(...)` sites so they appear in rendered graphs; the inference wrapper excludes them from MCMC collection with NumPyro `~z.<site>` extra-field entries.
-
-The direct simulator lives in `coupling_sources/core/simulator.py`. Its `simulate_coupling(...)` function takes model-shaped stimulus arrays (`visible_reports`, `hidden_source`, `trial_type`, `valid_trials`), a plain model-parameter dict, and a response seed. Stimulus generation and conversion happen outside the simulator. The simulator loops over trials to update coupling state and returns a plain dict whose top-level keys are the `model_coupling(...)` arguments plus a `metadata` dict for responses, true parameters, truth directions, and other diagnostics.
-
-The inference pipeline lives in `coupling_sources/core/inference.py`. Its `run_inference(...)` function is the single MCMC entry point: it takes a `StimulusBatch`, simulation parameters, a simulation seed, and MCMC settings, then runs stimuli -> simulator -> `model_coupling` MCMC.
-
-The model parameters are `alpha`, `beta_y`, `beta_z`, and `kappa`; `beta_y` and `beta_z` are bounded inverse-temperature parameters on `(0, 10)`. Priors are constructed by `coupling_sources/core/priors.py` and shared by the NumPyro model and simulator parameter sampling.
-
-Render the graph from the live model:
-
-```bash
-.venv/bin/python scripts/render_model_graph.py --output-stem artifacts/preregistration_model_graph_numpyro
-```
-
-Simulate responses from an existing stimulus artifact:
-
-```bash
-.venv/bin/python scripts/run_simulation.py \
-  --stimuli artifacts/example/stimuli.zarr \
-  --seed 201 \
-  --alpha 0.2 \
-  --beta-y 1.0 \
-  --beta-z 1.0 \
-  --kappa 16.0 \
-  --output artifacts/example/simulation.zarr
-```
-
 ## Run Parameter Recovery
 
 ```bash
 .venv/bin/python scripts/run_parameter_recovery.py \
   --config configs/parameters_sweep/adam.json \
-  --compute-config configs/ssh_machines.json
+  --compute-config configs/compute/ssh_machines.json
 ```
 
 If the compute config contains active remote machines, the runner asks once for the shared SSH password. Jobs are independent: the local machine prepares the artifact run, sends assigned job inputs to each remote host over SSH, runs local process pools on those hosts, and fetches result archives when each host finishes.
+
+Set `mcmc.parallel_chains_per_fit` in the run config to the number of MCMC chains that can run in parallel inside one fit. The runner applies it to worker environments as `XLA_FLAGS=--xla_force_host_platform_device_count=<N>`, which NumPyro/JAX needs when `chain_method` is `parallel`. This is separate from `max_concurrent_fits`, which controls how many independent fits run at the same time on a host.
 
 Artifacts are written under `artifacts/<config_name>_<YYYY_MM_DD_HH_MM_SS>/`:
 
@@ -68,7 +41,7 @@ No Dask scheduler, dashboard, worker ports, nanny ports, or SSH tunnel script ar
 
 ## SSH Compute Config
 
-Use `configs/ssh_machines.json` for your private machine list. an example is `ssh_machines.example.json`
+Use `configs/compute/ssh_machines.json` for your private machine list. An example is `configs/compute/ssh_machines.example.json`.
 
 Fields:
 

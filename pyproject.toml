@@ -8,7 +8,7 @@ version = "0.1.0"
 authors = [
     {name = "Hicham DAHMOU"}
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "arviz[all]>=0.10.0",
   "fabric>=3.2.3",

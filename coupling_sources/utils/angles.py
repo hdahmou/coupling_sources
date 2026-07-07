@@ -13,8 +13,16 @@ def centered_angle(x: jax.Array) -> jax.Array:
     return jnp.angle(jnp.exp(1j * x))
 
 
-def circular_difference_deg(a: jax.Array, b: jax.Array) -> jax.Array:
-    return (a - b + 180) % 360 - 180
+def mean_angle_difference(source_choices: jax.Array, weights: jax.Array) -> jax.Array:
+    n_sources = source_choices.shape[-1]
+    equal_weights = jnp.full(
+        (n_sources,),
+        1.0 / n_sources,
+        dtype=source_choices.dtype,
+    )
+    equal_mean = circular_mean(source_choices, equal_weights)
+    weighted_mean = circular_mean(source_choices, weights)
+    return jnp.abs(centered_angle(equal_mean - weighted_mean))
 
 
 def optimal_weights(cov: jax.Array) -> jax.Array:

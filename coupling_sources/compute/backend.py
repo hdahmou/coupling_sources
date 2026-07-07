@@ -10,9 +10,11 @@ from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import Event
 
 from fabric import Connection
 
+from coupling_sources.compute.archives import safe_extract_tar
 from coupling_sources.core.data import MCMCSpecs
 
 LOCAL_HOSTS = {"local", "localhost", "127.0.0.1", "::1"}
@@ -31,7 +33,13 @@ class Machine:
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]) -> "Machine":
-        host = _host_with_optional_user(values)
+        if "host" not in values:
+            raise ValueError("machine entries must include host")
+        host = str(values["host"])
+        user = values.get("username", values.get("user"))
+        if user is not None and "@" not in host:
+            host = f"{user}@{host}"
+
         max_concurrent_fits = int(values.get("max_concurrent_fits", 0))
         if max_concurrent_fits < 0:
             raise ValueError(f"max_concurrent_fits cannot be negative for {host}")
@@ -45,8 +53,8 @@ class Machine:
             project_path=None if project_path is None else Path(str(project_path)),
             python=None if python is None else str(python),
             port=None if port is None else int(port),
-            env=_mapping(values.get("env"), "machine.env"),
-            connect_kwargs=_mapping(values.get("connect_kwargs"), "machine.connect_kwargs"),
+            env=dict(values.get("env") or {}),
+            connect_kwargs=dict(values.get("connect_kwargs") or {}),
         )
 
     @property
@@ -99,8 +107,8 @@ class ComputeConfig:
         return cls(
             machines=machines,
             python=str(values.get("python", DEFAULT_REMOTE_PYTHON)),
-            env=_mapping(values.get("env"), "env"),
-            connect_kwargs=_mapping(values.get("connect_kwargs"), "connect_kwargs"),
+            env=dict(values.get("env") or {}),
+            connect_kwargs=dict(values.get("connect_kwargs") or {}),
         )
 
     @property
@@ -119,16 +127,36 @@ class PosteriorJob:
 
 
 @dataclass(frozen=True)
-class MachineAssignment:
-    machine: Machine
-    jobs: tuple[PosteriorJob, ...]
-
-
-@dataclass(frozen=True)
 class HostResult:
     host: str
     job_count: int
     failed_jobs: tuple[str, ...]
+
+    @classmethod
+    def from_status_files(
+        cls,
+        *,
+        run_dir: Path,
+        host: str,
+        jobs: Sequence[PosteriorJob],
+        exit_code: int,
+    ) -> "HostResult":
+        failed: list[str] = []
+        for job in jobs:
+            status_path = (
+                run_dir / "job_status" / f"{_safe_path_part(job.job_id)}.json"
+            )
+            if not status_path.exists():
+                failed.append(job.job_id)
+                continue
+
+            status = json.loads(status_path.read_text())
+            if not status.get("ok", False):
+                failed.append(job.job_id)
+
+        if exit_code != 0 and not failed:
+            raise RuntimeError(f"host {host} exited with code {exit_code}")
+        return cls(host=host, job_count=len(jobs), failed_jobs=tuple(failed))
 
 
 def add_prompted_ssh_password(compute_config: dict[str, object]) -> None:
@@ -149,6 +177,7 @@ def run_posterior_jobs(
     run_dir: Path,
     jobs: Sequence[PosteriorJob],
     mcmc: MCMCSpecs,
+    parallel_chains_per_fit: int | None = None,
     progress_bar: bool,
 ) -> None:
     if not jobs:
@@ -157,18 +186,22 @@ def run_posterior_jobs(
     config = ComputeConfig.from_mapping(compute_config)
     assignments = _assign_jobs(jobs, config.active_machines)
     results: list[HostResult] = []
+    shutdown_event = Event()
+    runner = _PosteriorJobRunner(
+        config=config,
+        run_dir=run_dir,
+        mcmc=mcmc,
+        parallel_chains_per_fit=parallel_chains_per_fit,
+        progress_bar=progress_bar,
+        shutdown_event=shutdown_event,
+    )
 
-    with ThreadPoolExecutor(max_workers=len(assignments)) as executor:
+    executor = ThreadPoolExecutor(max_workers=len(assignments))
+    futures = []
+    try:
         futures = [
-            executor.submit(
-                _run_assignment,
-                assignment,
-                config,
-                run_dir,
-                mcmc,
-                progress_bar,
-            )
-            for assignment in assignments
+            executor.submit(runner.run, machine, machine_jobs)
+            for machine, machine_jobs in assignments
         ]
         for future in as_completed(futures):
             result = future.result()
@@ -178,32 +211,18 @@ def run_posterior_jobs(
                 f"jobs={result.job_count} failed={len(result.failed_jobs)}",
                 flush=True,
             )
+    except BaseException:
+        shutdown_event.set()
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
 
     failed = [job_id for result in results for job_id in result.failed_jobs]
     if failed:
         raise RuntimeError(f"posterior fits failed for {len(failed)} job(s): {failed[:10]}")
-
-
-def _host_with_optional_user(values: Mapping[str, object]) -> str:
-    if "host" not in values:
-        raise ValueError("machine entries must include host")
-    host = str(values["host"])
-    user = values.get("username", values.get("user"))
-    if user is None or "@" in host:
-        return host
-    return f"{user}@{host}"
-
-
-def _mapping(value: object, name: str) -> dict[str, object]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return dict(value)
-
-
-def _string_values(values: Mapping[str, object] | None) -> dict[str, str]:
-    return {} if values is None else {str(key): str(value) for key, value in values.items()}
 
 
 def _safe_path_part(value: object) -> str:
@@ -221,7 +240,7 @@ def _project_relative_run_dir(run_dir: Path) -> Path:
 
 def _assign_jobs(
     jobs: Sequence[PosteriorJob], machines: Sequence[Machine]
-) -> list[MachineAssignment]:
+) -> list[tuple[Machine, tuple[PosteriorJob, ...]]]:
     slots = [
         machine_index
         for machine_index, machine in enumerate(machines)
@@ -235,252 +254,227 @@ def _assign_jobs(
         assigned[slots[job_index % len(slots)]].append(job)
 
     return [
-        MachineAssignment(machine, tuple(machine_jobs))
+        (machine, tuple(machine_jobs))
         for machine, machine_jobs in zip(machines, assigned, strict=True)
         if machine_jobs
     ]
 
 
-def _run_assignment(
-    assignment: MachineAssignment,
+def _xla_flags_with_host_device_count(flags: object | None, count: int) -> str:
+    if count < 1:
+        raise ValueError("parallel_chains_per_fit must be positive")
+
+    desired = f"--xla_force_host_platform_device_count={count}"
+    if flags is None or str(flags).strip() == "":
+        return desired
+
+    text = str(flags)
+    pattern = r"(^|\s)--xla_force_host_platform_device_count=\S+"
+    if re.search(pattern, text):
+        return re.sub(pattern, lambda match: f"{match.group(1)}{desired}", text)
+    return f"{text} {desired}"
+
+
+def _machine_env(
+    machine: Machine,
     config: ComputeConfig,
-    run_dir: Path,
-    mcmc: MCMCSpecs,
-    progress_bar: bool,
-) -> HostResult:
-    if assignment.machine.is_local:
-        return _run_local_machine(
-            assignment,
-            config,
-            run_dir,
-            mcmc,
-            progress_bar,
-        )
-    return _run_remote_machine(
-        assignment,
-        config,
-        run_dir,
-        mcmc,
-        progress_bar,
-    )
-
-
-def _machine_env(machine: Machine, config: ComputeConfig) -> dict[str, str]:
-    env = {**_string_values(config.env), **_string_values(machine.env)}
+    parallel_chains_per_fit: int | None = None,
+) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for values in (config.env, machine.env):
+        if values is not None:
+            env.update({str(key): str(value) for key, value in values.items()})
     env.setdefault("PYTHONUNBUFFERED", "1")
+    if parallel_chains_per_fit is not None:
+        env["XLA_FLAGS"] = _xla_flags_with_host_device_count(
+            env.get("XLA_FLAGS"),
+            parallel_chains_per_fit,
+        )
     return env
 
 
-def _connection(machine: Machine, config: ComputeConfig) -> Connection:
-    kwargs: dict[str, object] = {
-        "connect_kwargs": {
-            **(config.connect_kwargs or {}),
-            **(machine.connect_kwargs or {}),
+@dataclass(frozen=True)
+class _PosteriorJobRunner:
+    config: ComputeConfig
+    run_dir: Path
+    mcmc: MCMCSpecs
+    parallel_chains_per_fit: int | None
+    progress_bar: bool
+    shutdown_event: Event
+
+    def run(self, machine: Machine, jobs: tuple[PosteriorJob, ...]) -> HostResult:
+        if machine.is_local:
+            return self._run_local(machine, jobs)
+        return self._run_remote(machine, jobs)
+
+    def _write_assignment(
+        self,
+        machine: Machine,
+        jobs: Sequence[PosteriorJob],
+    ) -> Path:
+        transfer_dir = self.run_dir / "transfer"
+        transfer_dir.mkdir(parents=True, exist_ok=True)
+        assignment_path = transfer_dir / f"assigned_jobs_{_safe_path_part(machine.host)}.json"
+        assigned_jobs = {
+            "worker_label": _safe_path_part(machine.host),
+            "jobs": [job.job_id for job in jobs],
+            "mcmc": asdict(self.mcmc),
+            "progress_bar": self.progress_bar,
         }
-    }
-    if machine.port is not None:
-        kwargs["port"] = machine.port
-    return Connection(machine.host, **kwargs)
+        assignment_path.write_text(json.dumps(assigned_jobs, indent=2) + "\n")
+        return assignment_path
 
-
-def _write_assignment(
-    *,
-    run_dir: Path,
-    machine: Machine,
-    jobs: Sequence[PosteriorJob],
-    mcmc: MCMCSpecs,
-    progress_bar: bool,
-) -> Path:
-    transfer_dir = run_dir / "transfer"
-    transfer_dir.mkdir(parents=True, exist_ok=True)
-    assignment_path = transfer_dir / f"assigned_jobs_{_safe_path_part(machine.host)}.json"
-    assignment = {
-        "worker_label": _safe_path_part(machine.host),
-        "jobs": [job.job_id for job in jobs],
-        "mcmc": asdict(mcmc),
-        "progress_bar": progress_bar,
-    }
-    assignment_path.write_text(json.dumps(assignment, indent=2) + "\n")
-    return assignment_path
-
-
-def _make_input_archive(
-    *,
-    run_dir: Path,
-    machine: Machine,
-    jobs: Sequence[PosteriorJob],
-    assignment_path: Path,
-) -> Path:
-    archive_path = run_dir / "transfer" / f"input_{_safe_path_part(machine.host)}.tar.gz"
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive_path, "w:gz") as archive:
-        for path in (run_dir / "config.json", run_dir / "job_grid.csv", assignment_path):
-            archive.add(path, arcname=path.relative_to(run_dir))
-        for job in jobs:
-            stimuli_path = job.job_dir / "stimuli.zarr"
-            simulation_parameters_path = job.job_dir / "simulation_parameters.json"
-            archive.add(stimuli_path, arcname=stimuli_path.relative_to(run_dir))
-            archive.add(
-                simulation_parameters_path,
-                arcname=simulation_parameters_path.relative_to(run_dir),
-            )
-    return archive_path
-
-
-def _safe_extract(archive_path: Path, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_root = output_dir.resolve()
-    with tarfile.open(archive_path, "r:gz") as archive:
-        members = archive.getmembers()
-        for member in members:
-            target = (output_root / member.name).resolve()
-            if output_root != target and output_root not in target.parents:
-                raise ValueError(f"unsafe archive member path: {member.name}")
-        archive.extractall(output_root, members=members, filter="data")
-
-
-def _shell_env(env: Mapping[str, str]) -> str:
-    if not env:
-        return ""
-    return " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items()) + " "
-
-
-def _remote_worker_command(
-    *,
-    machine: Machine,
-    config: ComputeConfig,
-    remote_run_dir: Path,
-    remote_input_archive: Path,
-    remote_assignment: Path,
-    remote_result_archive: Path,
-) -> str:
-    args = [
-        machine.remote_python_path(config.python),
-        "-m",
-        "coupling_sources.compute.fabric_worker",
-        "--run-dir",
-        str(remote_run_dir),
-        "--input-archive",
-        str(remote_input_archive),
-        "--assigned-jobs",
-        str(remote_assignment),
-        "--max-parallel",
-        str(machine.max_concurrent_fits),
-        "--result-archive",
-        str(remote_result_archive),
-    ]
-    project_path = machine.remote_project_path()
-    env = _shell_env(_machine_env(machine, config))
-    return f"cd {shlex.quote(str(project_path))} && {env}{shlex.join(args)}"
-
-
-def _run_remote_machine(
-    assignment: MachineAssignment,
-    config: ComputeConfig,
-    run_dir: Path,
-    mcmc: MCMCSpecs,
-    progress_bar: bool,
-) -> HostResult:
-    machine = assignment.machine
-    jobs = assignment.jobs
-    assignment_path = _write_assignment(
-        run_dir=run_dir,
-        machine=machine,
-        jobs=jobs,
-        mcmc=mcmc,
-        progress_bar=progress_bar,
-    )
-    input_archive = _make_input_archive(
-        run_dir=run_dir,
-        machine=machine,
-        jobs=jobs,
-        assignment_path=assignment_path,
-    )
-
-    remote_run_dir = machine.remote_project_path() / _project_relative_run_dir(run_dir)
-    remote_transfer_dir = remote_run_dir / "transfer"
-    remote_input_archive = remote_transfer_dir / input_archive.name
-    remote_assignment = remote_run_dir / assignment_path.relative_to(run_dir)
-    remote_result_archive = remote_transfer_dir / f"results_{_safe_path_part(machine.host)}.tar.gz"
-    local_result_archive = run_dir / "transfer" / remote_result_archive.name
-    command = _remote_worker_command(
-        machine=machine,
-        config=config,
-        remote_run_dir=remote_run_dir,
-        remote_input_archive=remote_input_archive,
-        remote_assignment=remote_assignment,
-        remote_result_archive=remote_result_archive,
-    )
-
-    print(f"remote host start: {machine.host}: jobs={len(jobs)}", flush=True)
-    print(f"remote run dir: {machine.host}: {remote_run_dir}", flush=True)
-    with _connection(machine, config) as connection:
-        connection.run(f"mkdir -p {shlex.quote(str(remote_transfer_dir))}")
-        connection.put(str(input_archive), remote=str(remote_input_archive))
-        result = connection.run(command, warn=True)
-        try:
-            connection.get(str(remote_result_archive), local=str(local_result_archive))
-        except Exception as exc:
-            raise RuntimeError(
-                f"failed to fetch result archive from {machine.host}: {remote_result_archive}"
-            ) from exc
-
-    _safe_extract(local_result_archive, run_dir)
-    return _host_result(run_dir, machine.host, jobs, result.exited)
-
-
-def _run_local_machine(
-    assignment: MachineAssignment,
-    config: ComputeConfig,
-    run_dir: Path,
-    mcmc: MCMCSpecs,
-    progress_bar: bool,
-) -> HostResult:
-    from coupling_sources.compute.fabric_worker import run_assigned_jobs
-
-    machine = assignment.machine
-    jobs = assignment.jobs
-    assignment_path = _write_assignment(
-        run_dir=run_dir,
-        machine=machine,
-        jobs=jobs,
-        mcmc=mcmc,
-        progress_bar=progress_bar,
-    )
-
-    previous_env = os.environ.copy()
-    os.environ.update(_machine_env(machine, config))
-    try:
-        exit_code = run_assigned_jobs(
-            run_dir=run_dir,
-            assigned_jobs_path=assignment_path,
-            max_parallel=machine.max_concurrent_fits,
-            result_archive_path=None,
+    def _make_input_archive(
+        self,
+        machine: Machine,
+        jobs: Sequence[PosteriorJob],
+        assignment_path: Path,
+    ) -> Path:
+        archive_path = (
+            self.run_dir / "transfer" / f"input_{_safe_path_part(machine.host)}.tar.gz"
         )
-    finally:
-        os.environ.clear()
-        os.environ.update(previous_env)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path, "w:gz") as archive:
+            for path in (
+                self.run_dir / "config.json",
+                self.run_dir / "job_grid.csv",
+                assignment_path,
+            ):
+                archive.add(path, arcname=path.relative_to(self.run_dir))
+            for job in jobs:
+                stimuli_path = job.job_dir / "stimuli.zarr"
+                simulation_parameters_path = job.job_dir / "simulation_parameters.json"
+                archive.add(stimuli_path, arcname=stimuli_path.relative_to(self.run_dir))
+                archive.add(
+                    simulation_parameters_path,
+                    arcname=simulation_parameters_path.relative_to(self.run_dir),
+                )
+        return archive_path
 
-    return _host_result(run_dir, machine.host, jobs, exit_code)
+    def _connection(self, machine: Machine) -> Connection:
+        kwargs: dict[str, object] = {
+            "connect_kwargs": {
+                **(self.config.connect_kwargs or {}),
+                **(machine.connect_kwargs or {}),
+            }
+        }
+        if machine.port is not None:
+            kwargs["port"] = machine.port
+        return Connection(machine.host, **kwargs)
 
+    def _remote_worker_command(
+        self,
+        *,
+        machine: Machine,
+        remote_run_dir: Path,
+        remote_input_archive: Path,
+        remote_assignment: Path,
+        remote_result_archive: Path,
+    ) -> str:
+        args = [
+            machine.remote_python_path(self.config.python),
+            "-m",
+            "coupling_sources.compute.fabric_worker",
+            "--run-dir",
+            str(remote_run_dir),
+            "--input-archive",
+            str(remote_input_archive),
+            "--assigned-jobs",
+            str(remote_assignment),
+            "--max-parallel",
+            str(machine.max_concurrent_fits),
+            "--result-archive",
+            str(remote_result_archive),
+        ]
+        project_path = machine.remote_project_path()
+        env = _machine_env(machine, self.config, self.parallel_chains_per_fit)
+        env_prefix = (
+            " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
+            + " "
+            if env
+            else ""
+        )
+        return f"cd {shlex.quote(str(project_path))} && {env_prefix}{shlex.join(args)}"
 
-def _host_result(
-    run_dir: Path, host: str, jobs: Sequence[PosteriorJob], exit_code: int
-) -> HostResult:
-    failed = _failed_jobs(run_dir, jobs)
-    if exit_code != 0 and not failed:
-        raise RuntimeError(f"host {host} exited with code {exit_code}")
-    return HostResult(host=host, job_count=len(jobs), failed_jobs=tuple(failed))
+    def _run_remote(
+        self,
+        machine: Machine,
+        jobs: tuple[PosteriorJob, ...],
+    ) -> HostResult:
+        assignment_path = self._write_assignment(machine, jobs)
+        input_archive = self._make_input_archive(machine, jobs, assignment_path)
 
+        remote_run_dir = machine.remote_project_path() / _project_relative_run_dir(
+            self.run_dir
+        )
+        remote_transfer_dir = remote_run_dir / "transfer"
+        remote_input_archive = remote_transfer_dir / input_archive.name
+        remote_assignment = remote_run_dir / assignment_path.relative_to(self.run_dir)
+        remote_result_archive = (
+            remote_transfer_dir / f"results_{_safe_path_part(machine.host)}.tar.gz"
+        )
+        local_result_archive = self.run_dir / "transfer" / remote_result_archive.name
+        command = self._remote_worker_command(
+            machine=machine,
+            remote_run_dir=remote_run_dir,
+            remote_input_archive=remote_input_archive,
+            remote_assignment=remote_assignment,
+            remote_result_archive=remote_result_archive,
+        )
 
-def _failed_jobs(run_dir: Path, jobs: Sequence[PosteriorJob]) -> list[str]:
-    failed: list[str] = []
-    for job in jobs:
-        status_path = run_dir / "job_status" / f"{_safe_path_part(job.job_id)}.json"
-        if not status_path.exists():
-            failed.append(job.job_id)
-            continue
-        status = json.loads(status_path.read_text())
-        if not status.get("ok", False):
-            failed.append(job.job_id)
-    return failed
+        print(f"remote host start: {machine.host}: jobs={len(jobs)}", flush=True)
+        print(f"remote run dir: {machine.host}: {remote_run_dir}", flush=True)
+        with self._connection(machine) as connection:
+            connection.run(f"mkdir -p {shlex.quote(str(remote_transfer_dir))}")
+            connection.put(str(input_archive), remote=str(remote_input_archive))
+            result = connection.run(command, warn=True)
+            try:
+                connection.get(
+                    str(remote_result_archive),
+                    local=str(local_result_archive),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"failed to fetch result archive from {machine.host}: "
+                    f"{remote_result_archive}"
+                ) from exc
+
+        safe_extract_tar(local_result_archive, self.run_dir)
+        return HostResult.from_status_files(
+            run_dir=self.run_dir,
+            host=machine.host,
+            jobs=jobs,
+            exit_code=result.exited,
+        )
+
+    def _run_local(
+        self,
+        machine: Machine,
+        jobs: tuple[PosteriorJob, ...],
+    ) -> HostResult:
+        assignment_path = self._write_assignment(machine, jobs)
+
+        previous_env = os.environ.copy()
+        os.environ.update(
+            _machine_env(machine, self.config, self.parallel_chains_per_fit)
+        )
+        try:
+            from coupling_sources.compute.fabric_worker import run_assigned_jobs
+
+            exit_code = run_assigned_jobs(
+                run_dir=self.run_dir,
+                assigned_jobs_path=assignment_path,
+                max_parallel=machine.max_concurrent_fits,
+                result_archive_path=None,
+                shutdown_event=self.shutdown_event,
+            )
+        finally:
+            os.environ.clear()
+            os.environ.update(previous_env)
+
+        return HostResult.from_status_files(
+            run_dir=self.run_dir,
+            host=machine.host,
+            jobs=jobs,
+            exit_code=exit_code,
+        )

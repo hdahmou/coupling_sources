@@ -19,6 +19,7 @@ class StimulusSpec:
     sigma: float
     lam: float
     coupled_sources: tuple[int, int]
+    min_mean_angle_difference: float
 
 
 @dataclass(frozen=True)

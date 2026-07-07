@@ -4,20 +4,25 @@ import argparse
 import json
 import os
 import re
+import signal
 import sys
 import tarfile
 import traceback
 from collections.abc import Sequence
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from contextlib import redirect_stderr, redirect_stdout
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
 from multiprocessing import get_context
 from pathlib import Path
+from threading import Event, current_thread, main_thread
 from typing import Any
 
+from coupling_sources.compute.archives import safe_extract_tar
 from coupling_sources.core.data import MCMCSpecs
 from coupling_sources.core.inference import run_inference
 from coupling_sources.utils.artifacts import read_stimuli_zarr, write_posterior_zarr, write_simulation_zarr
+
+POLL_SECONDS = 0.5
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -36,6 +41,7 @@ def run_assigned_jobs(
     assigned_jobs_path: Path,
     max_parallel: int,
     result_archive_path: Path | None,
+    shutdown_event: Event | None = None,
 ) -> int:
     if max_parallel < 1:
         raise ValueError("max_parallel must be positive")
@@ -54,10 +60,12 @@ def run_assigned_jobs(
     status_dir = run_dir / "job_status"
     status_dir.mkdir(parents=True, exist_ok=True)
 
-    with ProcessPoolExecutor(
+    executor = ProcessPoolExecutor(
         max_workers=max_parallel,
         mp_context=get_context("spawn"),
-    ) as executor:
+    )
+    futures = {}
+    try:
         futures = {
             executor.submit(
                 _run_one_job,
@@ -69,25 +77,48 @@ def run_assigned_jobs(
             ): job_id
             for job_id in jobs
         }
-        for completed, future in enumerate(as_completed(futures), start=1):
-            job_id = futures[future]
-            try:
-                status = future.result()
-            except Exception:
-                status = {
-                    "job_id": job_id,
-                    "ok": False,
-                    "error": traceback.format_exc(),
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                }
-            _write_status(status_dir, status)
-            if not status.get("ok", False):
-                failed += 1
-            print(
-                f"worker progress: {worker_label}: {completed}/{len(jobs)} "
-                f"job={job_id} ok={status.get('ok', False)}",
-                flush=True,
+        pending = set(futures)
+        completed = 0
+        while pending:
+            if shutdown_event is not None and shutdown_event.is_set():
+                raise KeyboardInterrupt
+            done, pending = wait(
+                pending,
+                timeout=POLL_SECONDS,
+                return_when=FIRST_COMPLETED,
             )
+            for future in done:
+                completed += 1
+                job_id = futures[future]
+                try:
+                    status = future.result()
+                except Exception:
+                    status = {
+                        "job_id": job_id,
+                        "ok": False,
+                        "error": traceback.format_exc(),
+                        "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                _write_status(status_dir, status)
+                if not status.get("ok", False):
+                    failed += 1
+                print(
+                    f"worker progress: {worker_label}: {completed}/{len(jobs)} "
+                    f"job={job_id} ok={status.get('ok', False)}",
+                    flush=True,
+                )
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        print(
+            f"worker interrupted: {worker_label}; terminating outstanding jobs",
+            file=sys.stderr,
+            flush=True,
+        )
+        executor.kill_workers()
+        raise
+    else:
+        executor.shutdown(wait=True, cancel_futures=True)
 
     if result_archive_path is not None:
         _write_result_archive(run_dir, jobs, worker_label, result_archive_path)
@@ -176,33 +207,43 @@ def _add_if_exists(archive: tarfile.TarFile, path: Path, base: Path) -> None:
         archive.add(path, arcname=path.relative_to(base))
 
 
-def _safe_extract(archive_path: Path, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_root = output_dir.resolve()
-    with tarfile.open(archive_path, "r:gz") as archive:
-        members = archive.getmembers()
-        for member in members:
-            target = (output_root / member.name).resolve()
-            if output_root != target and output_root not in target.parents:
-                raise ValueError(f"unsafe archive member path: {member.name}")
-        archive.extractall(output_root, members=members, filter="data")
-
-
 def _safe_path_part(value: object) -> str:
     name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._-")
     return name or "job"
 
 
+def _raise_keyboard_interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
+@contextmanager
+def _sigterm_as_keyboard_interrupt():
+    if current_thread() is not main_thread():
+        yield
+        return
+
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.input_archive is not None:
-        _safe_extract(args.input_archive, args.run_dir)
-    return run_assigned_jobs(
-        run_dir=args.run_dir,
-        assigned_jobs_path=args.assigned_jobs,
-        max_parallel=args.max_parallel,
-        result_archive_path=args.result_archive,
-    )
+        safe_extract_tar(args.input_archive, args.run_dir)
+    with _sigterm_as_keyboard_interrupt():
+        try:
+            return run_assigned_jobs(
+                run_dir=args.run_dir,
+                assigned_jobs_path=args.assigned_jobs,
+                max_parallel=args.max_parallel,
+                result_archive_path=args.result_archive,
+            )
+        except KeyboardInterrupt:
+            return 130
 
 
 if __name__ == "__main__":

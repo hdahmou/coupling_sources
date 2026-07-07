@@ -7,8 +7,9 @@
   "stimuli": {
     "defaults": {
       "seed": 101,
-      "n_participants": 1,
       "n_sources": 4,
+      "n_rounds": 1,
+      "min_mean_angle_difference": 0.05,
       "coupled_sources": [
         0,
         1
@@ -17,21 +18,21 @@
     "grid": {
       "mode": "product",
       "axes": {
-        "n_rounds": [
-          40
+        "n_participants": [
+          30, 60
         ],
         "n_trials_full": [
-          20
+          40
         ],
         "n_trials_partial": [
-          20
+          40
         ],
         "sigma": [
-          0.55
+          0.55, 0.75
         ],
         "lam": [
           0.8,
-          0.7
+          0.5
         ]
       }
     }
@@ -41,17 +42,17 @@
   },
   "prior": {
     "seed": 202,
-    "parameter_draws": 3
+    "parameter_draws": 16
   },
   "mcmc": {
     "seed": 103,
-    "num_warmup": 300,
-    "num_samples": 600,
+    "num_warmup": 200,
+    "num_samples": 1000,
     "num_chains": 3,
-    "chain_method": "parallel",
+    "chain_method": "sequential",
     "target_accept_prob": 0.8,
     "max_tree_depth": 10,
-    "host_device_count": 3,
+    "parallel_chains_per_fit": 1,
     "progress_bar": true
   }
 }

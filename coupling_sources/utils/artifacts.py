@@ -128,6 +128,12 @@ def write_prior_zarr(output: Path, prior_samples: dict[str, Any]) -> None:
     _write_zarr_tree(root, {"prior_samples": prior_samples}, float_dtype=np.float16)
 
 
+def read_prior_zarr(path: Path) -> dict[str, np.ndarray]:
+    root = zarr.open_group(path, mode="r")
+    tree = _read_zarr_tree(root)
+    return dict(tree["prior_samples"])
+
+
 def write_stimuli_zarr(output: Path, stimuli: StimulusBatch) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     root = zarr.open_group(output, mode="w")
@@ -182,3 +188,14 @@ def write_posterior_zarr(
         data = _array_for_zarr(values, float_dtype=np.float16)
         chunks = (1, data.shape[1]) if data.ndim == 2 else data.shape
         samples_group.create_array(parameter, data=data, chunks=chunks)
+
+
+def read_posterior_zarr(path: Path) -> dict[str, np.ndarray]:
+    root = zarr.open_group(path, mode="r")
+    tree = _read_zarr_tree(root)
+    return dict(tree["posterior_samples"])
+
+
+def read_posterior_diagnostics_zarr(path: Path) -> dict[str, Any]:
+    root = zarr.open_group(path, mode="r")
+    return dict(root.attrs.get("diagnostics", {}))
