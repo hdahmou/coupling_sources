@@ -116,13 +116,13 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
                 truth_weights = numpyro.deterministic(
                     f"~truth_weights_{suffix}",
                     jax.nn.softmax(
-                        truth_source_scores * beta_y + log_visible_sources, axis=-1
+                        truth_source_scores / beta_y + log_visible_sources, axis=-1
                     ),
                 )
                 probe_weights = numpyro.deterministic(
                     f"~probe_weights_{suffix}",
                     jax.nn.softmax(
-                        probe_source_scores * beta_z + log_visible_sources, axis=-1
+                        probe_source_scores / beta_z + log_visible_sources, axis=-1
                     ),
                 )
 

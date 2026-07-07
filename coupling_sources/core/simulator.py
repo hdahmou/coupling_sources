@@ -25,7 +25,7 @@ def simulate_coupling(
     params = normalize_coupling_parameters(parameters)
     response_key = jax.random.PRNGKey(seed)
 
-    visible_reports = jnp.asarray(batch.visible_reports)
+    visible_reports = jnp.asarray(batch.visible_reports, dtype=jnp.float64)
     hidden_source = jnp.asarray(batch.hidden_source, dtype=jnp.int32)
     trial_type = jnp.asarray(batch.trial_type, dtype=jnp.int32)
     valid_trials = jnp.asarray(batch.valid_trials, dtype=bool)
@@ -93,8 +93,8 @@ def simulate_coupling(
         probe_source_scores = probe_source_scores * visible_sources.astype(pair_scores.dtype)
 
         log_visible_sources = jnp.log(visible_sources)
-        truth_weights = jax.nn.softmax(truth_source_scores * params["beta_y"] + log_visible_sources, axis=-1)
-        probe_weights = jax.nn.softmax(probe_source_scores * params["beta_z"] + log_visible_sources, axis=-1)
+        truth_weights = jax.nn.softmax(truth_source_scores / params["beta_y"] + log_visible_sources, axis=-1)
+        probe_weights = jax.nn.softmax(probe_source_scores / params["beta_z"] + log_visible_sources, axis=-1)
         truth_mean_angle = circular_mean(reports, truth_weights)
         hidden_mean_angle = circular_mean(reports, probe_weights)
         response_mean_angle = jnp.where(

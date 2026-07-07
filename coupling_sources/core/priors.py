@@ -48,8 +48,11 @@ def coupling_simulation_parameter_sites() -> tuple[str, ...]:
 
 
 def normalize_coupling_parameters(values: Mapping[str, Any]) -> dict[str, jax.Array]:
-    params = {name: jnp.asarray(values[name]) for name in COUPLING_PARAMETER_SITES}
-    params["c0"] = jnp.asarray(values.get("c0", 0.0))
+    params = {
+        name: jnp.asarray(values[name], dtype=jnp.float64)
+        for name in COUPLING_PARAMETER_SITES
+    }
+    params["c0"] = jnp.asarray(values.get("c0", 0.0), dtype=jnp.float64)
     return params
 
 
@@ -65,5 +68,5 @@ def sample_coupling_parameter_draws(seed: int, draws: int) -> dict[str, jax.Arra
         name: jnp.asarray(prior.sample(key, sample_shape=(draws,)))
         for key, (name, prior) in zip(keys, priors.items(), strict=True)
     }
-    samples["c0"] = jnp.zeros((draws,))
+    samples["c0"] = jnp.zeros((draws,), dtype=jnp.float64)
     return samples

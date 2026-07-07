@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 
 
 @dataclass(frozen=True)
 class StimulusSpec:
     seed: int
+    n_participants: int
     n_sources: int
     n_rounds: int
     n_trials_full: int
@@ -101,3 +103,28 @@ class SimulationBatch:
     @property
     def metadata(self) -> StimulusMetadata:
         return self.stimuli.metadata
+
+
+def _fit_float_array(value: Any) -> jax.Array:
+    return jnp.asarray(value, dtype=jnp.float64)
+
+
+def prepare_stimuli_for_fit(stimuli: StimulusBatch) -> StimulusBatch:
+    """Return model-facing stimulus arrays with fit dtypes."""
+    return replace(
+        stimuli,
+        visible_reports=_fit_float_array(stimuli.visible_reports),
+        hidden_source=jnp.asarray(stimuli.hidden_source, dtype=jnp.int32),
+        trial_type=jnp.asarray(stimuli.trial_type, dtype=jnp.int32),
+        valid_trials=jnp.asarray(stimuli.valid_trials, dtype=bool),
+    )
+
+
+def prepare_simulation_for_fit(simulation: SimulationBatch) -> SimulationBatch:
+    """Return model-facing simulated observations with fit dtypes."""
+    return replace(
+        simulation,
+        stimuli=prepare_stimuli_for_fit(simulation.stimuli),
+        truth_estimates=_fit_float_array(simulation.truth_estimates),
+        hidden_predictions=_fit_float_array(simulation.hidden_predictions),
+    )

@@ -26,18 +26,30 @@ Tree = dict[str, Any]
 # Zarr tree I/O
 
 
-def _array_for_zarr(value: Any) -> np.ndarray:
-    return np.asarray(jax.device_get(value))
+def _array_for_zarr(value: Any, *, float_dtype: Any = None) -> np.ndarray:
+    data = np.asarray(jax.device_get(value))
+    if float_dtype is not None and np.issubdtype(data.dtype, np.floating):
+        return data.astype(float_dtype, copy=False)
+    return data
 
 
-def _write_zarr_tree(group: Any, tree: Mapping[str, Any]) -> None:
+def _write_zarr_tree(
+    group: Any,
+    tree: Mapping[str, Any],
+    *,
+    float_dtype: Any = None,
+) -> None:
     for name, value in tree.items():
         if value is None:
             continue
         if isinstance(value, Mapping):
-            _write_zarr_tree(group.create_group(name), value)
+            _write_zarr_tree(
+                group.create_group(name),
+                value,
+                float_dtype=float_dtype,
+            )
             continue
-        group.create_array(name, data=_array_for_zarr(value))
+        group.create_array(name, data=_array_for_zarr(value, float_dtype=float_dtype))
 
 
 def _read_zarr_tree(group: Any) -> Tree:
@@ -113,7 +125,7 @@ def _simulation_from_tree(tree: Mapping[str, Any]) -> SimulationBatch:
 def write_prior_zarr(output: Path, prior_samples: dict[str, Any]) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     root = zarr.open_group(output, mode="w")
-    _write_zarr_tree(root, {"prior_samples": prior_samples})
+    _write_zarr_tree(root, {"prior_samples": prior_samples}, float_dtype=np.float16)
 
 
 def write_stimuli_zarr(output: Path, stimuli: StimulusBatch) -> None:
@@ -130,7 +142,7 @@ def read_stimuli_zarr(path: Path) -> StimulusBatch:
 def write_simulation_zarr(output: Path, simulation: SimulationBatch) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     root = zarr.open_group(output, mode="w")
-    _write_zarr_tree(root, _simulation_to_tree(simulation))
+    _write_zarr_tree(root, _simulation_to_tree(simulation), float_dtype=np.float16)
 
 
 def read_simulation_zarr(path: Path) -> SimulationBatch:
@@ -167,6 +179,6 @@ def write_posterior_zarr(
     samples_group.attrs["dims"] = ["chain", "draw"]
     samples_group.attrs["dtype"] = "float16"
     for parameter, values in samples.items():
-        data = _array_for_zarr(values).astype(np.float16, copy=False)
+        data = _array_for_zarr(values, float_dtype=np.float16)
         chunks = (1, data.shape[1]) if data.ndim == 2 else data.shape
         samples_group.create_array(parameter, data=data, chunks=chunks)

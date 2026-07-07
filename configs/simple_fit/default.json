@@ -6,6 +6,7 @@
   },
   "stimuli": {
     "seed": 101,
+    "n_participants": 1,
     "n_sources": 4,
     "n_rounds": 8,
     "n_trials_full": 28,
@@ -21,9 +22,9 @@
     "seed": 201,
     "participant_parameters": {
       "alpha": 0.2,
-      "gamma": 0.8,
-      "kappa_p": 16.0,
-      "kappa_a": 4.0
+      "beta_y": 1.0,
+      "beta_z": 1.0,
+      "kappa": 16.0
     }
   },
   "mcmc": {

@@ -7,6 +7,7 @@
   "stimuli": {
     "defaults": {
       "seed": 101,
+      "n_participants": 1,
       "n_sources": 4,
       "coupled_sources": [
         0,

@@ -4,10 +4,14 @@ from collections.abc import Mapping
 from typing import Any
 
 import jax
-import numpy as np
 import numpyro
 
-from coupling_sources.core.data import MCMCSpecs, StimulusBatch
+from coupling_sources.core.data import (
+    MCMCSpecs,
+    StimulusBatch,
+    prepare_simulation_for_fit,
+    prepare_stimuli_for_fit,
+)
 from coupling_sources.core.diagnostics import mcmc_diagnostics
 from coupling_sources.core.model import model_coupling
 from coupling_sources.core.priors import coupling_parameter_sites
@@ -25,11 +29,15 @@ def run_inference(
     progress_label: str | None = None,
 ) -> dict[str, object]:
     """Run the full pipeline: stimuli -> simulator -> NumPyro MCMC."""
+    numpyro.enable_x64(True)
+    stimuli_for_fit = prepare_stimuli_for_fit(stimuli)
+
     simulation = simulate_coupling(
         seed=simulation_seed,
-        batch=stimuli,
+        batch=stimuli_for_fit,
         parameters=simulation_parameters,
     )
+    fit_batch = prepare_simulation_for_fit(simulation)
 
     kernel = numpyro.infer.NUTS(
         model_coupling,
@@ -38,7 +46,7 @@ def run_inference(
     )
 
     def postprocess_fit_samples(latent_samples: dict[str, Any]) -> dict[str, Any]:
-        samples = kernel.postprocess_fn((simulation,), {})(latent_samples)
+        samples = kernel.postprocess_fn((fit_batch,), {})(latent_samples)
         return {
             name: value for name, value in samples.items() if not name.startswith("~")
         }
@@ -53,7 +61,7 @@ def run_inference(
         postprocess_fn=postprocess_fit_samples,
     )
     with labeled_progress_bar(progress_label if progress_bar else None):
-        mcmc_runner.run(jax.random.PRNGKey(mcmc.seed), simulation)
+        mcmc_runner.run(jax.random.PRNGKey(mcmc.seed), fit_batch)
 
     chain_samples = mcmc_runner.get_samples(group_by_chain=True)
     parameter_names = coupling_parameter_sites()
@@ -62,7 +70,7 @@ def run_inference(
         "chain_method": mcmc.chain_method,
         "diagnostics": mcmc_diagnostics(mcmc_runner),
         "samples": {
-            name: np.asarray(jax.device_get(chain_samples[name]), dtype=np.float16)
+            name: jax.device_get(chain_samples[name])
             for name in parameter_names
         },
     }
