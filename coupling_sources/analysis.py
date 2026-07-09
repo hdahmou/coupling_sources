@@ -35,10 +35,10 @@ def simulation_frame(simulation: SimulationBatch) -> pd.DataFrame:
     off_diagonal = 1.0 - np.eye(pair_scores.shape[-1])
     mean_pair_score = (pair_scores * off_diagonal).sum(axis=(-2, -1)) / max(int(off_diagonal.sum()), 1)
     is_probe = (jnp.asarray(stimuli.trial_type) == HIDDEN_SOURCE_PROBE) & jnp.asarray(stimuli.valid_trials)
-    truth_log_prob = dist.VonMises(simulation.diagnostics["truth_mean_angle"], params["κ"]).log_prob(
+    truth_log_prob = dist.VonMises(simulation.diagnostics["truth_mean_angle"], params["vmConcentration"]).log_prob(
         simulation.truth_estimates
     )
-    hidden_log_prob = dist.VonMises(simulation.diagnostics["hidden_mean_angle"], params["κ"]).log_prob(
+    hidden_log_prob = dist.VonMises(simulation.diagnostics["hidden_mean_angle"], params["vmConcentration"]).log_prob(
         simulation.hidden_predictions
     )
     response_log_prob = jnp.where(

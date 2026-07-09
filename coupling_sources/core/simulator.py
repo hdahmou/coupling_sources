@@ -73,7 +73,7 @@ def simulate_coupling(
         pre_update_pair_scores = pair_scores
         valid_trial = valid_trials[:, :, trial_index]
         update_pairs = (visible_pairs & valid_trial[..., None, None]).astype(pair_scores.dtype)
-        pair_scores = pair_scores + update_pairs * params["α"] * (relative_agreement - pair_scores)
+        pair_scores = pair_scores + update_pairs * params["learningRate"] * (relative_agreement - pair_scores)
 
         visible_count = jnp.maximum(jnp.sum(visible_sources, axis=-1, keepdims=True), 1)
         truth_denominator = jnp.maximum(visible_count - 1, 1)
@@ -120,8 +120,8 @@ def simulate_coupling(
             diagnostics[name] = diagnostics[name].at[:, :, trial_index, ...].set(value)
 
     key_truth, key_hidden = jax.random.split(response_key)
-    truth_draws = dist.VonMises(diagnostics["truth_mean_angle"], params["κ"]).sample(key_truth) % (2 * jnp.pi)
-    hidden_draws = dist.VonMises(diagnostics["hidden_mean_angle"], params["κ"]).sample(key_hidden) % (2 * jnp.pi)
+    truth_draws = dist.VonMises(diagnostics["truth_mean_angle"], params["vmConcentration"]).sample(key_truth) % (2 * jnp.pi)
+    hidden_draws = dist.VonMises(diagnostics["hidden_mean_angle"], params["vmConcentration"]).sample(key_hidden) % (2 * jnp.pi)
     is_truth = (trial_type == TRUTH_ESTIMATION) & valid_trials
     is_probe = (trial_type == HIDDEN_SOURCE_PROBE) & valid_trials
     truth_estimates = jnp.where(is_truth, truth_draws, jnp.nan)

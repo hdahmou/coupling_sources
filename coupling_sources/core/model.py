@@ -4,13 +4,13 @@ The model is the preregistered Phase-2 learning model, written one
 observe -> update -> respond step per trial. Every recorded site carries the
 symbol used in the preregistration TeX:
 
-    α, g_y, g_z, κ   pooled parameters (sample sites)
+    learningRate, g_y, g_z, vmConcentration   pooled parameters (sample sites)
     ~a_t*            a_{ij,t}: centred relative-agreement signal
     ~c_t*            c_{ij,p,t}: pair scores after the trial-t update
     ~η^y_t*, ~η^z_t* source-level response scores (redundancy / relatedness)
     ~w_t*, ~v_t*     softmax weights with gains g_y and g_z
     ~μ_t*, ~ν_t*     weighted circular means of the visible reports
-    y_t*, z_t*       observed responses, y ~ VonMises(μ, κ), z ~ VonMises(ν, κ)
+    y_t*, z_t*       observed responses, y ~ VonMises(μ, vmConcentration), z ~ VonMises(ν, vmConcentration)
 
 Conventions
 -----------
@@ -125,10 +125,10 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
     off_diagonal = ~jnp.eye(n_sources, dtype=bool)
 
     priors = CouplingPriors.distributions()
-    α = numpyro.sample("α", priors["α"])
+    learningRate = numpyro.sample("learningRate", priors["learningRate"])
     g_y = numpyro.sample("g_y", priors["g_y"])
     g_z = numpyro.sample("g_z", priors["g_z"])
-    κ = numpyro.sample("κ", priors["κ"])
+    vmConcentration = numpyro.sample("vmConcentration", priors["vmConcentration"])
 
     participants = numpyro.plate("participants", n_participants, dim=-2)
     rounds = numpyro.plate("rounds", n_rounds, dim=-1)
@@ -157,11 +157,11 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
                 f"~a_{t}", _relative_agreement(reports, visible_pairs)
             )
 
-            # Update: c <- c + α (a - c) on visible pairs of valid trials;
+            # Update: c <- c + learningRate (a - c) on visible pairs of valid trials;
             # all other pairs are carried forward unchanged.
             update_pairs = visible_pairs & valid_trial[..., None, None]
             pair_scores = numpyro.deterministic(
-                f"~c_{t}", pair_scores + update_pairs * α * (a - pair_scores)
+                f"~c_{t}", pair_scores + update_pairs * learningRate * (a - pair_scores)
             )
 
             # Respond, truth-estimation branch: redundancy discounting.
@@ -196,6 +196,6 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
                 else jnp.where(z_mask, hidden_predictions[:, :, trial_index], 0.0)
             )
             with numpyro.handlers.mask(mask=y_mask):
-                numpyro.sample(f"y_{t}", dist.VonMises(μ, κ), obs=y_obs)
+                numpyro.sample(f"y_{t}", dist.VonMises(μ, vmConcentration), obs=y_obs)
             with numpyro.handlers.mask(mask=z_mask):
-                numpyro.sample(f"z_{t}", dist.VonMises(ν, κ), obs=z_obs)
+                numpyro.sample(f"z_{t}", dist.VonMises(ν, vmConcentration), obs=z_obs)

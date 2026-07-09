@@ -22,10 +22,10 @@
   "simulation": {
     "seed": 201,
     "participant_parameters": {
-      "α": 0.2,
+      "learningRate": 0.2,
       "g_y": 1.0,
       "g_z": 1.0,
-      "κ": 16.0
+      "vmConcentration": 16.0
     }
   },
   "mcmc": {

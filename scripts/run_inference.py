@@ -23,10 +23,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run simulation and posterior inference for one stimulus artifact.")
     parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli .npz artifact.")
     parser.add_argument("--simulation-seed", type=int, required=True)
-    parser.add_argument("--alpha", type=float, required=True)
-    parser.add_argument("--gain-y", type=float, required=True)
-    parser.add_argument("--gain-z", type=float, required=True)
-    parser.add_argument("--kappa", type=float, required=True)
+    parser.add_argument("--learning-rate", type=float, required=True)
+    parser.add_argument("--g-y", type=float, required=True)
+    parser.add_argument("--g-z", type=float, required=True)
+    parser.add_argument("--vm-concentration", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--num-warmup", type=int, required=True)
     parser.add_argument("--num-samples", type=int, required=True)
@@ -55,10 +55,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     result = run_inference(
         stimuli=StimulusBatch.from_config(Artifacts.read_config(args.stimuli)),
         simulation_parameters={
-            "α": args.alpha,
-            "g_y": args.gain_y,
-            "g_z": args.gain_z,
-            "κ": args.kappa,
+            "learningRate": args.learning_rate,
+            "g_y": args.g_y,
+            "g_z": args.g_z,
+            "vmConcentration": args.vm_concentration,
         },
         simulation_seed=args.simulation_seed,
         mcmc=mcmc,

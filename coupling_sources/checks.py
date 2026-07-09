@@ -138,8 +138,8 @@ def benchmark_weights_for_lambda(lam: float, n_sources: int = 4, coupled_sources
     return optimal_linear_weights(cov)
 
 
-def kappa_for_approx_sd_deg(sd_deg: float) -> float:
-    """Large-kappa approximation: circular SD ≈ 1 / sqrt(kappa)."""
+def vm_concentration_for_approx_sd_deg(sd_deg: float) -> float:
+    """Large-concentration approximation for circular standard deviation."""
     return 1.0 / (sd_deg * DEG) ** 2
 
 
@@ -229,13 +229,13 @@ def make_locked_design(
 
 
 def sim_params_from_prior_draw(prior_draws: Mapping[str, np.ndarray | jax.Array], index: int) -> dict[str, float]:
-    draw_count = len(np.asarray(prior_draws["α"]).reshape(-1))
+    draw_count = len(np.asarray(prior_draws["learningRate"]).reshape(-1))
     c0 = np.asarray(prior_draws.get("c0", np.zeros(draw_count))).reshape(-1)[index]
     return {
-        "α": float(np.asarray(prior_draws["α"]).reshape(-1)[index]),
+        "learningRate": float(np.asarray(prior_draws["learningRate"]).reshape(-1)[index]),
         "g_y": float(np.asarray(prior_draws["g_y"]).reshape(-1)[index]),
         "g_z": float(np.asarray(prior_draws["g_z"]).reshape(-1)[index]),
-        "κ": float(np.asarray(prior_draws["κ"]).reshape(-1)[index]),
+        "vmConcentration": float(np.asarray(prior_draws["vmConcentration"]).reshape(-1)[index]),
         "c0": float(c0),
     }
 
@@ -319,19 +319,19 @@ def angular_error_values(simulation: SimulationBatch, design: CheckDesign) -> di
 
 
 def parameter_transforms(samples: Mapping[str, np.ndarray | jax.Array]) -> dict[str, np.ndarray]:
-    alpha = np.asarray(samples["α"], dtype=float)
+    learning_rate = np.asarray(samples["learningRate"], dtype=float)
     g_y = np.asarray(samples["g_y"], dtype=float)
     g_z = np.asarray(samples["g_z"], dtype=float)
     eps = np.finfo(float).eps
     scaled_g_y = np.clip(g_y / 10.0, eps, 1 - eps)
     scaled_g_z = np.clip(g_z / 10.0, eps, 1 - eps)
     return {
-        "logit_α": np.log(np.clip(alpha, eps, 1 - eps) / np.clip(1 - alpha, eps, 1)),
+        "logit_learningRate": np.log(np.clip(learning_rate, eps, 1 - eps) / np.clip(1 - learning_rate, eps, 1)),
         "log_g_y": np.log(g_y),
         "log_g_z": np.log(g_z),
         "logit_g_y_over_10": np.log(scaled_g_y / (1 - scaled_g_y)),
         "logit_g_z_over_10": np.log(scaled_g_z / (1 - scaled_g_z)),
-        "log_κ": np.log(np.asarray(samples["κ"], dtype=float)),
+        "log_vmConcentration": np.log(np.asarray(samples["vmConcentration"], dtype=float)),
     }
 
 
@@ -349,9 +349,9 @@ def states_for_params(design: CheckDesign, params: Mapping[str, float]) -> objec
 
 def response_log_likelihood_by_trial(simulation: SimulationBatch, design: CheckDesign, params: Mapping[str, float]) -> np.ndarray:
     states = states_for_params(design, params)
-    kappa = params["κ"]
-    truth_logp = np.asarray(dist.VonMises(states.truth_mean_angle, kappa).log_prob(simulation.truth_estimates))
-    probe_logp = np.asarray(dist.VonMises(states.hidden_mean_angle, kappa).log_prob(simulation.hidden_predictions))
+    vm_concentration = params["vmConcentration"]
+    truth_logp = np.asarray(dist.VonMises(states.truth_mean_angle, vm_concentration).log_prob(simulation.truth_estimates))
+    probe_logp = np.asarray(dist.VonMises(states.hidden_mean_angle, vm_concentration).log_prob(simulation.hidden_predictions))
     trial_type = np.asarray(design.trial_type)
     valid = np.asarray(design.valid_trials)
     logp = np.where(trial_type == HIDDEN_SOURCE_PROBE, probe_logp, truth_logp)
@@ -366,11 +366,11 @@ def posterior_predictive(
     max_draws: int = 100,
 ) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed)
-    flat_n = len(np.asarray(samples["α"]).reshape(-1))
+    flat_n = len(np.asarray(samples["learningRate"]).reshape(-1))
     draw_indices = np.linspace(0, flat_n - 1, min(max_draws, flat_n), dtype=int)
     responses = []
     means = []
-    kappas = []
+    vm_concentrations = []
     truth_means = []
     hidden_means = []
     for draw_index in draw_indices:
@@ -380,11 +380,11 @@ def posterior_predictive(
         hidden_mean = np.asarray(states.hidden_mean_angle)
         trial_type = np.asarray(design.trial_type)
         mean = np.where(trial_type == HIDDEN_SOURCE_PROBE, hidden_mean, truth_mean)
-        replicated = rng.vonmises(mean, params["κ"]) % TWO_PI
+        replicated = rng.vonmises(mean, params["vmConcentration"]) % TWO_PI
         replicated = np.where(np.asarray(design.valid_trials), replicated, np.nan)
         responses.append(replicated)
         means.append(mean)
-        kappas.append(params["κ"])
+        vm_concentrations.append(params["vmConcentration"])
         truth_means.append(truth_mean)
         hidden_means.append(hidden_mean)
     return {
@@ -393,7 +393,7 @@ def posterior_predictive(
         "response_mean_angle": np.asarray(means),
         "truth_mean_angle": np.asarray(truth_means),
         "hidden_mean_angle": np.asarray(hidden_means),
-        "κ": np.asarray(kappas),
+        "vmConcentration": np.asarray(vm_concentrations),
     }
 
 

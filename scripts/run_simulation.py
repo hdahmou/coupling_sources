@@ -23,10 +23,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one simulation from stimuli.")
     parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli .npz artifact.")
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--alpha", type=float, required=True)
-    parser.add_argument("--gain-y", type=float, required=True)
-    parser.add_argument("--gain-z", type=float, required=True)
-    parser.add_argument("--kappa", type=float, required=True)
+    parser.add_argument("--learning-rate", type=float, required=True)
+    parser.add_argument("--g-y", type=float, required=True)
+    parser.add_argument("--g-z", type=float, required=True)
+    parser.add_argument("--vm-concentration", type=float, required=True)
     parser.add_argument("--output", type=Path, required=True, help="Simulation .npz artifact.")
     return parser.parse_args(argv)
 
@@ -38,10 +38,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         batch=stimuli,
         parameters={
-            "α": args.alpha,
-            "g_y": args.gain_y,
-            "g_z": args.gain_z,
-            "κ": args.kappa,
+            "learningRate": args.learning_rate,
+            "g_y": args.g_y,
+            "g_z": args.g_z,
+            "vmConcentration": args.vm_concentration,
         },
     )
     Artifacts.write_config(args.output, simulation.to_config(), float_dtype=np.float16)

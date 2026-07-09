@@ -15,19 +15,19 @@ from numpyro.distributions import transforms
 class CouplingPriors:
     """Static namespace for coupling-model prior and parameter helpers."""
 
-    PARAMETER_SITES = ("α", "g_y", "g_z", "κ")
+    PARAMETER_SITES = ("learningRate", "g_y", "g_z", "vmConcentration")
     SIMULATION_PARAMETER_SITES = (*PARAMETER_SITES, "c0")
 
     @staticmethod
     def distributions() -> dict[str, dist.Distribution]:
         return {
-            "α": dist.TransformedDistribution(
+            "learningRate": dist.TransformedDistribution(
                 dist.Normal(0.0, 1.5),
                 transforms.SigmoidTransform(),
             ),
             "g_y": dist.LogNormal(log(8.0), 1.0),
             "g_z": dist.LogNormal(log(8.0), 1.0),
-            "κ": dist.LogNormal(log(8.0), 1.0),
+            "vmConcentration": dist.LogNormal(log(8.0), 1.0),
         }
 
     @staticmethod
