@@ -31,8 +31,8 @@ Set `mcmc.parallel_chains_per_fit` in the run config to the number of MCMC chain
 
 Artifacts are written under `artifacts/<config_name>_<YYYY_MM_DD_HH_MM_SS>/`:
 
-- `config.json`, `logs.log`, `prior.zarr`, and `job_grid.csv`
-- `jobs/job_000000/stimuli.zarr`, `simulation_parameters.json`, `simulation.zarr`, and `posterior.zarr`
+- `config.json`, `logs.log`, `prior.npz`, and `job_grid.csv`
+- `jobs/job_000000/stimuli.npz`, `simulation_parameters.json`, `simulation.npz`, and `posterior.npz`
 - `worker_logs/<host>/<job_id>.log`
 - `job_status/<job_id>.json`
 - temporary transfer archives under `transfer/`

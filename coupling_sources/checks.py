@@ -18,6 +18,7 @@ import numpyro.distributions as dist
 
 from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
 from coupling_sources.core.data import SimulationBatch, StimulusBatch, StimulusMetadata
+from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.core.simulator import simulate_coupling
 
 TWO_PI = 2.0 * np.pi
@@ -63,6 +64,7 @@ class CheckDesign:
                 true_direction=self.true_direction,
                 source_choices=self.visible_reports,
                 stimulus_covariance=self.covariance,
+                resultant_length=jnp.ones_like(self.true_direction),
             ),
         )
         if not include_observations:
@@ -227,12 +229,13 @@ def make_locked_design(
 
 
 def sim_params_from_prior_draw(prior_draws: Mapping[str, np.ndarray | jax.Array], index: int) -> dict[str, float]:
-    c0 = np.asarray(prior_draws.get("c0", np.zeros(len(np.asarray(prior_draws["alpha"])))))[index]
+    draw_count = len(np.asarray(prior_draws["α"]).reshape(-1))
+    c0 = np.asarray(prior_draws.get("c0", np.zeros(draw_count))).reshape(-1)[index]
     return {
-        "alpha": float(np.asarray(prior_draws["alpha"])[index]),
-        "beta_y": float(np.asarray(prior_draws["beta_y"])[index]),
-        "beta_z": float(np.asarray(prior_draws["beta_z"])[index]),
-        "kappa": float(np.asarray(prior_draws["kappa"])[index]),
+        "α": float(np.asarray(prior_draws["α"]).reshape(-1)[index]),
+        "g_y": float(np.asarray(prior_draws["g_y"]).reshape(-1)[index]),
+        "g_z": float(np.asarray(prior_draws["g_z"]).reshape(-1)[index]),
+        "κ": float(np.asarray(prior_draws["κ"]).reshape(-1)[index]),
         "c0": float(c0),
     }
 
@@ -316,24 +319,27 @@ def angular_error_values(simulation: SimulationBatch, design: CheckDesign) -> di
 
 
 def parameter_transforms(samples: Mapping[str, np.ndarray | jax.Array]) -> dict[str, np.ndarray]:
-    alpha = np.asarray(samples["alpha"], dtype=float)
-    beta_y = np.asarray(samples["beta_y"], dtype=float)
-    beta_z = np.asarray(samples["beta_z"], dtype=float)
+    alpha = np.asarray(samples["α"], dtype=float)
+    g_y = np.asarray(samples["g_y"], dtype=float)
+    g_z = np.asarray(samples["g_z"], dtype=float)
     eps = np.finfo(float).eps
-    scaled_beta_y = np.clip(beta_y / 10.0, eps, 1 - eps)
-    scaled_beta_z = np.clip(beta_z / 10.0, eps, 1 - eps)
+    scaled_g_y = np.clip(g_y / 10.0, eps, 1 - eps)
+    scaled_g_z = np.clip(g_z / 10.0, eps, 1 - eps)
     return {
-        "logit_alpha": np.log(np.clip(alpha, eps, 1 - eps) / np.clip(1 - alpha, eps, 1)),
-        "log_beta_y": np.log(beta_y),
-        "log_beta_z": np.log(beta_z),
-        "logit_beta_y_over_10": np.log(scaled_beta_y / (1 - scaled_beta_y)),
-        "logit_beta_z_over_10": np.log(scaled_beta_z / (1 - scaled_beta_z)),
-        "log_kappa": np.log(np.asarray(samples["kappa"], dtype=float)),
+        "logit_α": np.log(np.clip(alpha, eps, 1 - eps) / np.clip(1 - alpha, eps, 1)),
+        "log_g_y": np.log(g_y),
+        "log_g_z": np.log(g_z),
+        "logit_g_y_over_10": np.log(scaled_g_y / (1 - scaled_g_y)),
+        "logit_g_z_over_10": np.log(scaled_g_z / (1 - scaled_g_z)),
+        "log_κ": np.log(np.asarray(samples["κ"], dtype=float)),
     }
 
 
 def posterior_draw_dict(samples: Mapping[str, np.ndarray | jax.Array], draw_index: int) -> dict[str, float]:
-    return {name: float(np.asarray(values).reshape(-1)[draw_index]) for name, values in samples.items()}
+    return {
+        name: float(np.asarray(samples[name]).reshape(-1)[draw_index])
+        for name in CouplingPriors.parameter_sites()
+    }
 
 
 def states_for_params(design: CheckDesign, params: Mapping[str, float]) -> object:
@@ -343,7 +349,7 @@ def states_for_params(design: CheckDesign, params: Mapping[str, float]) -> objec
 
 def response_log_likelihood_by_trial(simulation: SimulationBatch, design: CheckDesign, params: Mapping[str, float]) -> np.ndarray:
     states = states_for_params(design, params)
-    kappa = params["kappa"]
+    kappa = params["κ"]
     truth_logp = np.asarray(dist.VonMises(states.truth_mean_angle, kappa).log_prob(simulation.truth_estimates))
     probe_logp = np.asarray(dist.VonMises(states.hidden_mean_angle, kappa).log_prob(simulation.hidden_predictions))
     trial_type = np.asarray(design.trial_type)
@@ -360,7 +366,7 @@ def posterior_predictive(
     max_draws: int = 100,
 ) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed)
-    flat_n = len(np.asarray(samples["alpha"]).reshape(-1))
+    flat_n = len(np.asarray(samples["α"]).reshape(-1))
     draw_indices = np.linspace(0, flat_n - 1, min(max_draws, flat_n), dtype=int)
     responses = []
     means = []
@@ -374,11 +380,11 @@ def posterior_predictive(
         hidden_mean = np.asarray(states.hidden_mean_angle)
         trial_type = np.asarray(design.trial_type)
         mean = np.where(trial_type == HIDDEN_SOURCE_PROBE, hidden_mean, truth_mean)
-        replicated = rng.vonmises(mean, params["kappa"]) % TWO_PI
+        replicated = rng.vonmises(mean, params["κ"]) % TWO_PI
         replicated = np.where(np.asarray(design.valid_trials), replicated, np.nan)
         responses.append(replicated)
         means.append(mean)
-        kappas.append(params["kappa"])
+        kappas.append(params["κ"])
         truth_means.append(truth_mean)
         hidden_means.append(hidden_mean)
     return {
@@ -387,7 +393,7 @@ def posterior_predictive(
         "response_mean_angle": np.asarray(means),
         "truth_mean_angle": np.asarray(truth_means),
         "hidden_mean_angle": np.asarray(hidden_means),
-        "kappa": np.asarray(kappas),
+        "κ": np.asarray(kappas),
     }
 
 

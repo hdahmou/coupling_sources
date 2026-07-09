@@ -12,14 +12,16 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from coupling_sources.core.data import MCMCSpecs
+import numpy as np
+
+from coupling_sources.core.data import MCMCSpecs, StimulusBatch
 from coupling_sources.core.inference import run_inference
-from coupling_sources.utils.artifacts import read_stimuli_zarr, write_posterior_zarr, write_simulation_zarr
+from coupling_sources.utils.artifacts import Artifacts
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run simulation and posterior inference for one stimulus artifact.")
-    parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli Zarr directory.")
+    parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli .npz artifact.")
     parser.add_argument("--simulation-seed", type=int, required=True)
     parser.add_argument("--alpha", type=float, required=True)
     parser.add_argument("--gain-y", type=float, required=True)
@@ -34,8 +36,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-tree-depth", type=int, required=True)
     parser.add_argument("--progress", action="store_true")
     parser.add_argument("--progress-label", default=None)
-    parser.add_argument("--simulation-output", type=Path, default=None, help="Optional simulation Zarr output.")
-    parser.add_argument("--output", type=Path, required=True, help="Posterior Zarr output directory.")
+    parser.add_argument("--simulation-output", type=Path, default=None, help="Optional simulation .npz artifact.")
+    parser.add_argument("--output", type=Path, required=True, help="Posterior .npz artifact.")
     return parser.parse_args(argv)
 
 
@@ -51,12 +53,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_tree_depth=args.max_tree_depth,
     )
     result = run_inference(
-        stimuli=read_stimuli_zarr(args.stimuli),
+        stimuli=StimulusBatch.from_config(Artifacts.read_config(args.stimuli)),
         simulation_parameters={
-            "alpha": args.alpha,
-            "gain_y": args.gain_y,
-            "gain_z": args.gain_z,
-            "kappa": args.kappa,
+            "α": args.alpha,
+            "g_y": args.gain_y,
+            "g_z": args.gain_z,
+            "κ": args.kappa,
         },
         simulation_seed=args.simulation_seed,
         mcmc=mcmc,
@@ -64,12 +66,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         progress_label=args.progress_label,
     )
     if args.simulation_output is not None:
-        write_simulation_zarr(args.simulation_output, result["simulation"])
-    write_posterior_zarr(
-        args.output,
-        diagnostics=result["diagnostics"],
-        samples=result["samples"],
-    )
+        Artifacts.write_config(
+            args.simulation_output,
+            result["simulation"].to_config(),
+            float_dtype=np.float16,
+        )
+    Artifacts.write_dist_samples(args.output, result["samples"])
+    Artifacts.write_mcmc_diagnostics(args.output, result["diagnostics"])
     print(
         f"posterior {args.output}: chain_method={result['chain_method']} samples={mcmc.num_samples}",
         file=sys.stderr,

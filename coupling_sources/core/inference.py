@@ -14,7 +14,7 @@ from coupling_sources.core.data import (
 )
 from coupling_sources.core.diagnostics import mcmc_diagnostics
 from coupling_sources.core.model import model_coupling
-from coupling_sources.core.priors import coupling_parameter_sites
+from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.core.simulator import simulate_coupling
 from coupling_sources.utils.progress import labeled_progress_bar
 
@@ -64,7 +64,7 @@ def run_inference(
         mcmc_runner.run(jax.random.PRNGKey(mcmc.seed), fit_batch)
 
     chain_samples = mcmc_runner.get_samples(group_by_chain=True)
-    parameter_names = coupling_parameter_sites()
+    parameter_names = CouplingPriors.parameter_sites()
     return {
         "simulation": simulation,
         "chain_method": mcmc.chain_method,

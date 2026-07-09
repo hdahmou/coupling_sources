@@ -16,16 +16,13 @@ from coupling_sources.compute.backend import (
     run_posterior_jobs,
 )
 from coupling_sources.core.data import MCMCSpecs
-from coupling_sources.core.priors import sample_coupling_parameter_draws
+from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.core.stimuli import generate_stimulus
-from coupling_sources.utils.artifacts import (
-    write_prior_zarr,
-    write_stimuli_zarr,
-)
+from coupling_sources.utils.artifacts import Artifacts
 from coupling_sources.workflows.job_grid import GridRun, build_run_grid, write_job_grid
 
 PARALLEL_CHAINS_PER_FIT_KEY = "parallel_chains_per_fit"
-LEGACY_HOST_DEVICE_COUNT_KEY = "host_device_count"
+REMOVED_HOST_DEVICE_COUNT_KEY = "host_device_count"
 
 
 @contextmanager
@@ -74,7 +71,7 @@ def _prepare_job(
     job_dir.mkdir(parents=True, exist_ok=True)
 
     stimuli = generate_stimulus(run.stimuli)
-    write_stimuli_zarr(job_dir / "stimuli.zarr", stimuli)
+    Artifacts.write_config(job_dir / "stimuli.npz", stimuli.to_config())
     (job_dir / "simulation_parameters.json").write_text(
         json.dumps(
             {"seed": simulation_seed, "parameters": run.simulation},
@@ -88,19 +85,16 @@ def _prepare_job(
 
 
 def _parallel_chains_per_fit(mcmc_config: dict[str, object]) -> int | None:
-    value = mcmc_config.get(PARALLEL_CHAINS_PER_FIT_KEY)
-    legacy_value = mcmc_config.get(LEGACY_HOST_DEVICE_COUNT_KEY)
-    if value is not None and legacy_value is not None:
+    if REMOVED_HOST_DEVICE_COUNT_KEY in mcmc_config:
         raise ValueError(
-            f"mcmc.{PARALLEL_CHAINS_PER_FIT_KEY} replaces "
-            f"mcmc.{LEGACY_HOST_DEVICE_COUNT_KEY}; use only one"
+            f"mcmc.{REMOVED_HOST_DEVICE_COUNT_KEY} was removed; "
+            f"use mcmc.{PARALLEL_CHAINS_PER_FIT_KEY}"
         )
-
-    configured = value if value is not None else legacy_value
-    if configured is None:
+    value = mcmc_config.get(PARALLEL_CHAINS_PER_FIT_KEY)
+    if value is None:
         return None
 
-    count = int(configured)
+    count = int(value)
     if count < 1:
         raise ValueError(f"mcmc.{PARALLEL_CHAINS_PER_FIT_KEY} must be positive")
     return count
@@ -145,11 +139,11 @@ def run_parameter_recovery(
             parallel_chains_per_fit = _parallel_chains_per_fit(mcmc_config)
             progress_bar = bool(mcmc_config["progress_bar"])
 
-            prior_samples = sample_coupling_parameter_draws(
+            prior_samples = CouplingPriors.sample_parameter_draws(
                 diagnostic_prior_seed,
                 diagnostic_prior_draws,
             )
-            write_prior_zarr(base_job_dir / "prior.zarr", prior_samples)
+            Artifacts.write_dist_samples(base_job_dir / "prior.npz", prior_samples)
             write_job_grid(base_job_dir / "job_grid.csv", runs)
 
             posterior_jobs = [
@@ -171,7 +165,7 @@ def run_parameter_recovery(
             )
             for job in posterior_jobs:
                 print(
-                    f"fit complete: {job.job_id}: {job.job_dir / 'posterior.zarr'}",
+                    f"fit complete: {job.job_id}: {job.job_dir / 'posterior.npz'}",
                     file=sys.stderr,
                 )
             print(f"all jobs complete: {base_job_dir}", file=sys.stderr)

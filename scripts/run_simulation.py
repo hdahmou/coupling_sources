@@ -14,36 +14,37 @@ from pathlib import Path
 
 import numpy as np
 
+from coupling_sources.core.data import StimulusBatch
 from coupling_sources.core.simulator import simulate_coupling
-from coupling_sources.utils.artifacts import read_stimuli_zarr, write_simulation_zarr
+from coupling_sources.utils.artifacts import Artifacts
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one simulation from stimuli.")
-    parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli Zarr directory.")
+    parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli .npz artifact.")
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--alpha", type=float, required=True)
     parser.add_argument("--gain-y", type=float, required=True)
     parser.add_argument("--gain-z", type=float, required=True)
     parser.add_argument("--kappa", type=float, required=True)
-    parser.add_argument("--output", type=Path, required=True, help="Output Zarr directory.")
+    parser.add_argument("--output", type=Path, required=True, help="Simulation .npz artifact.")
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    stimuli = read_stimuli_zarr(args.stimuli)
+    stimuli = StimulusBatch.from_config(Artifacts.read_config(args.stimuli))
     simulation = simulate_coupling(
         seed=args.seed,
         batch=stimuli,
         parameters={
-            "alpha": args.alpha,
-            "gain_y": args.gain_y,
-            "gain_z": args.gain_z,
-            "kappa": args.kappa,
+            "α": args.alpha,
+            "g_y": args.gain_y,
+            "g_z": args.gain_z,
+            "κ": args.kappa,
         },
     )
-    write_simulation_zarr(args.output, simulation)
+    Artifacts.write_config(args.output, simulation.to_config(), float_dtype=np.float16)
     responses = simulation.responses
     print(f"simulation: choices={np.asarray(responses).shape}", file=sys.stderr)
     return 0

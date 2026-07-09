@@ -11,7 +11,7 @@ import numpyro.distributions as dist
 
 from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
 from coupling_sources.core.data import CouplingDiagnostics, SimulationBatch, StimulusBatch
-from coupling_sources.core.priors import normalize_coupling_parameters
+from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.utils.angles import circular_mean
 
 
@@ -22,7 +22,7 @@ def simulate_coupling(
     parameters: Mapping[str, Any],
 ) -> SimulationBatch:
     """Simulate responses for a generated coupling batch."""
-    params = normalize_coupling_parameters(parameters)
+    params = CouplingPriors.normalize_parameters(parameters)
     response_key = jax.random.PRNGKey(seed)
 
     visible_reports = jnp.asarray(batch.visible_reports, dtype=jnp.float64)
@@ -73,7 +73,7 @@ def simulate_coupling(
         pre_update_pair_scores = pair_scores
         valid_trial = valid_trials[:, :, trial_index]
         update_pairs = (visible_pairs & valid_trial[..., None, None]).astype(pair_scores.dtype)
-        pair_scores = pair_scores + update_pairs * params["alpha"] * (relative_agreement - pair_scores)
+        pair_scores = pair_scores + update_pairs * params["α"] * (relative_agreement - pair_scores)
 
         visible_count = jnp.maximum(jnp.sum(visible_sources, axis=-1, keepdims=True), 1)
         truth_denominator = jnp.maximum(visible_count - 1, 1)
@@ -93,8 +93,8 @@ def simulate_coupling(
         probe_source_scores = probe_source_scores * visible_sources.astype(pair_scores.dtype)
 
         log_visible_sources = jnp.log(visible_sources)
-        truth_weights = jax.nn.softmax(truth_source_scores * params["gain_y"] + log_visible_sources, axis=-1)
-        probe_weights = jax.nn.softmax(probe_source_scores * params["gain_z"] + log_visible_sources, axis=-1)
+        truth_weights = jax.nn.softmax(truth_source_scores * params["g_y"] + log_visible_sources, axis=-1)
+        probe_weights = jax.nn.softmax(probe_source_scores * params["g_z"] + log_visible_sources, axis=-1)
         truth_mean_angle = circular_mean(reports, truth_weights)
         hidden_mean_angle = circular_mean(reports, probe_weights)
         response_mean_angle = jnp.where(
@@ -120,8 +120,8 @@ def simulate_coupling(
             diagnostics[name] = diagnostics[name].at[:, :, trial_index, ...].set(value)
 
     key_truth, key_hidden = jax.random.split(response_key)
-    truth_draws = dist.VonMises(diagnostics["truth_mean_angle"], params["kappa"]).sample(key_truth) % (2 * jnp.pi)
-    hidden_draws = dist.VonMises(diagnostics["hidden_mean_angle"], params["kappa"]).sample(key_hidden) % (2 * jnp.pi)
+    truth_draws = dist.VonMises(diagnostics["truth_mean_angle"], params["κ"]).sample(key_truth) % (2 * jnp.pi)
+    hidden_draws = dist.VonMises(diagnostics["hidden_mean_angle"], params["κ"]).sample(key_hidden) % (2 * jnp.pi)
     is_truth = (trial_type == TRUTH_ESTIMATION) & valid_trials
     is_probe = (trial_type == HIDDEN_SOURCE_PROBE) & valid_trials
     truth_estimates = jnp.where(is_truth, truth_draws, jnp.nan)

@@ -13,7 +13,7 @@
     "n_trials_partial": 12,
     "sigma": 0.55,
     "lam": 0.8,
-    "min_mean_angle_difference": 0.05,
+    "resultant_floor": 0.6,
     "coupled_sources": [
       0,
       1
@@ -22,10 +22,10 @@
   "simulation": {
     "seed": 201,
     "participant_parameters": {
-      "alpha": 0.2,
-      "gain_y": 1.0,
-      "gain_z": 1.0,
-      "kappa": 16.0
+      "α": 0.2,
+      "g_y": 1.0,
+      "g_z": 1.0,
+      "κ": 16.0
     }
   },
   "mcmc": {

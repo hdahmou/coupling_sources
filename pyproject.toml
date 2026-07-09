@@ -22,7 +22,6 @@ dependencies = [
   "pandas",
   "scienceplots>=2.2.2",
   "seaborn",
-  "zarr>=3.1.6",
 ]
 
 [tool.setuptools.packages.find]

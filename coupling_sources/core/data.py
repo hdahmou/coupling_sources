@@ -19,7 +19,24 @@ class StimulusSpec:
     sigma: float
     lam: float
     coupled_sources: tuple[int, int]
-    min_mean_angle_difference: float
+    resultant_floor: float
+
+    def __post_init__(self) -> None:
+        if self.n_participants < 1:
+            raise ValueError("n_participants must be at least 1")
+        if self.n_sources < 1:
+            raise ValueError("n_sources must be at least 1")
+        if self.n_trials_full < 0 or self.n_trials_partial < 0:
+            raise ValueError("trial counts must be non-negative")
+        if self.n_trials_partial % self.n_sources:
+            raise ValueError(
+                "n_trials_partial must be a multiple of n_sources so each hidden "
+                "source appears equally often"
+            )
+
+        floor_value = float(self.resultant_floor)
+        if not 0.0 <= floor_value <= 1.0:
+            raise ValueError("resultant_floor must be between 0 and 1")
 
 
 @dataclass(frozen=True)
@@ -28,6 +45,20 @@ class StimulusMetadata:
     true_direction: jax.Array
     source_choices: jax.Array
     stimulus_covariance: jax.Array
+    resultant_length: jax.Array
+
+    def to_config(self) -> dict[str, Any]:
+        return {
+            "complete_reports": self.complete_reports,
+            "true_direction": self.true_direction,
+            "source_choices": self.source_choices,
+            "stimulus_covariance": self.stimulus_covariance,
+            "resultant_length": self.resultant_length,
+        }
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> StimulusMetadata:
+        return cls(**dict(config))
 
 
 @dataclass(frozen=True)
@@ -37,6 +68,21 @@ class StimulusBatch:
     trial_type: jax.Array
     valid_trials: jax.Array
     metadata: StimulusMetadata
+
+    def to_config(self) -> dict[str, Any]:
+        return {
+            "visible_reports": self.visible_reports,
+            "hidden_source": self.hidden_source,
+            "trial_type": self.trial_type,
+            "valid_trials": self.valid_trials,
+            "metadata": self.metadata.to_config(),
+        }
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> StimulusBatch:
+        values = dict(config)
+        values["metadata"] = StimulusMetadata.from_config(config["metadata"])
+        return cls(**values)
 
 
 @dataclass(frozen=True)
@@ -75,6 +121,13 @@ class CouplingDiagnostics(Mapping[str, Any]):
     def __len__(self) -> int:
         return len(fields(self))
 
+    def to_config(self) -> dict[str, Any]:
+        return dict(self)
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> CouplingDiagnostics:
+        return cls(**dict(config))
+
 
 @dataclass(frozen=True)
 class SimulationBatch:
@@ -85,36 +138,42 @@ class SimulationBatch:
     participant_parameters: Mapping[str, Any] | None = None
     diagnostics: CouplingDiagnostics | Mapping[str, Any] = field(default_factory=dict)
 
-    @property
-    def visible_reports(self) -> jax.Array:
-        return self.stimuli.visible_reports
+    def to_config(self) -> dict[str, Any]:
+        if self.participant_parameters is None:
+            raise KeyError("simulation is missing participant_parameters")
+        if not self.diagnostics:
+            raise KeyError("simulation is missing diagnostics")
 
-    @property
-    def hidden_source(self) -> jax.Array:
-        return self.stimuli.hidden_source
+        return {
+            "stimuli": self.stimuli.to_config(),
+            "truth_estimates": self.truth_estimates,
+            "hidden_predictions": self.hidden_predictions,
+            "responses": self.responses,
+            "participant_parameters": dict(self.participant_parameters),
+            "diagnostics": (
+                self.diagnostics.to_config()
+                if isinstance(self.diagnostics, CouplingDiagnostics)
+                else dict(self.diagnostics)
+            ),
+        }
 
-    @property
-    def trial_type(self) -> jax.Array:
-        return self.stimuli.trial_type
-
-    @property
-    def valid_trials(self) -> jax.Array:
-        return self.stimuli.valid_trials
-
-    @property
-    def metadata(self) -> StimulusMetadata:
-        return self.stimuli.metadata
-
-
-def _fit_float_array(value: Any) -> jax.Array:
-    return jnp.asarray(value, dtype=jnp.float64)
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> SimulationBatch:
+        values = dict(config)
+        values["stimuli"] = StimulusBatch.from_config(config["stimuli"])
+        values["participant_parameters"] = {
+            name: float(jnp.asarray(value))
+            for name, value in config["participant_parameters"].items()
+        }
+        values["diagnostics"] = CouplingDiagnostics.from_config(config["diagnostics"])
+        return cls(**values)
 
 
 def prepare_stimuli_for_fit(stimuli: StimulusBatch) -> StimulusBatch:
     """Return model-facing stimulus arrays with fit dtypes."""
     return replace(
         stimuli,
-        visible_reports=_fit_float_array(stimuli.visible_reports),
+        visible_reports=jnp.asarray(stimuli.visible_reports, dtype=jnp.float64),
         hidden_source=jnp.asarray(stimuli.hidden_source, dtype=jnp.int32),
         trial_type=jnp.asarray(stimuli.trial_type, dtype=jnp.int32),
         valid_trials=jnp.asarray(stimuli.valid_trials, dtype=bool),
@@ -126,6 +185,9 @@ def prepare_simulation_for_fit(simulation: SimulationBatch) -> SimulationBatch:
     return replace(
         simulation,
         stimuli=prepare_stimuli_for_fit(simulation.stimuli),
-        truth_estimates=_fit_float_array(simulation.truth_estimates),
-        hidden_predictions=_fit_float_array(simulation.hidden_predictions),
+        truth_estimates=jnp.asarray(simulation.truth_estimates, dtype=jnp.float64),
+        hidden_predictions=jnp.asarray(
+            simulation.hidden_predictions,
+            dtype=jnp.float64,
+        ),
     )

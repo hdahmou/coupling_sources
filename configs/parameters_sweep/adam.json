@@ -9,7 +9,7 @@
       "seed": 101,
       "n_sources": 4,
       "n_rounds": 1,
-      "min_mean_angle_difference": 0.05,
+      "resultant_floor": 0.6,
       "coupled_sources": [
         0,
         1
@@ -19,20 +19,19 @@
       "mode": "product",
       "axes": {
         "n_participants": [
-          30, 60
+          10, 40
         ],
         "n_trials_full": [
-          40
+          20
         ],
         "n_trials_partial": [
-          40
+          20
         ],
         "sigma": [
-          0.55, 0.75
+          0.55
         ],
         "lam": [
-          0.8,
-          0.5
+          0.8
         ]
       }
     }
@@ -42,7 +41,7 @@
   },
   "prior": {
     "seed": 202,
-    "parameter_draws": 16
+    "parameter_draws": 48
   },
   "mcmc": {
     "seed": 103,

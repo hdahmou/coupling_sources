@@ -342,7 +342,7 @@ class _PosteriorJobRunner:
             ):
                 archive.add(path, arcname=path.relative_to(self.run_dir))
             for job in jobs:
-                stimuli_path = job.job_dir / "stimuli.zarr"
+                stimuli_path = job.job_dir / "stimuli.npz"
                 simulation_parameters_path = job.job_dir / "simulation_parameters.json"
                 archive.add(stimuli_path, arcname=stimuli_path.relative_to(self.run_dir))
                 archive.add(

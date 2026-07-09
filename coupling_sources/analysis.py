@@ -26,22 +26,23 @@ def simulation_frame(simulation: SimulationBatch) -> pd.DataFrame:
     responses = np.asarray(simulation.responses)
     n_participants, n_rounds, n_trials = responses.shape
     participant, round_, trial = np.indices(responses.shape)
-    visible_reports = np.asarray(simulation.visible_reports)
+    stimuli = simulation.stimuli
+    visible_reports = np.asarray(stimuli.visible_reports)
     params = simulation.participant_parameters
     if params is None:
         raise ValueError("simulation is missing participant_parameters")
     pair_scores = np.asarray(simulation.diagnostics["pair_scores"])
     off_diagonal = 1.0 - np.eye(pair_scores.shape[-1])
     mean_pair_score = (pair_scores * off_diagonal).sum(axis=(-2, -1)) / max(int(off_diagonal.sum()), 1)
-    is_probe = (jnp.asarray(simulation.trial_type) == HIDDEN_SOURCE_PROBE) & jnp.asarray(simulation.valid_trials)
-    truth_log_prob = dist.VonMises(simulation.diagnostics["truth_mean_angle"], params["kappa"]).log_prob(
+    is_probe = (jnp.asarray(stimuli.trial_type) == HIDDEN_SOURCE_PROBE) & jnp.asarray(stimuli.valid_trials)
+    truth_log_prob = dist.VonMises(simulation.diagnostics["truth_mean_angle"], params["κ"]).log_prob(
         simulation.truth_estimates
     )
-    hidden_log_prob = dist.VonMises(simulation.diagnostics["hidden_mean_angle"], params["kappa"]).log_prob(
+    hidden_log_prob = dist.VonMises(simulation.diagnostics["hidden_mean_angle"], params["κ"]).log_prob(
         simulation.hidden_predictions
     )
     response_log_prob = jnp.where(
-        simulation.valid_trials,
+        stimuli.valid_trials,
         jnp.where(is_probe, hidden_log_prob, truth_log_prob),
         jnp.nan,
     )
@@ -53,9 +54,9 @@ def simulation_frame(simulation: SimulationBatch) -> pd.DataFrame:
             "response": responses.ravel(),
             "truth_estimate": np.asarray(simulation.truth_estimates).ravel(),
             "hidden_prediction": np.asarray(simulation.hidden_predictions).ravel(),
-            "hidden_source": np.asarray(simulation.hidden_source).ravel(),
-            "trial_type": np.asarray(simulation.trial_type).ravel(),
-            "valid_trial": np.asarray(simulation.valid_trials).ravel().astype(bool),
+            "hidden_source": np.asarray(stimuli.hidden_source).ravel(),
+            "trial_type": np.asarray(stimuli.trial_type).ravel(),
+            "valid_trial": np.asarray(stimuli.valid_trials).ravel().astype(bool),
             "n_visible_sources": np.isfinite(visible_reports).sum(axis=-1).ravel(),
             "is_probe": np.asarray(is_probe).ravel().astype(bool),
             "truth_mean_angle": np.asarray(simulation.diagnostics["truth_mean_angle"]).ravel(),

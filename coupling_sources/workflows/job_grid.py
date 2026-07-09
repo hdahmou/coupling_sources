@@ -9,11 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from coupling_sources.core.data import StimulusSpec
-from coupling_sources.core.priors import (
-    coupling_parameters_as_floats,
-    coupling_simulation_parameter_sites,
-    sample_coupling_parameter_draws,
-)
+from coupling_sources.core.priors import CouplingPriors
 
 
 @dataclass(frozen=True)
@@ -42,14 +38,17 @@ def _expand_product_config(block: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _stimulus_parameters(values: Mapping[str, Any]) -> StimulusSpec:
+    if "mean_angle_difference_band" in values:
+        raise ValueError("mean_angle_difference_band was removed; use resultant_floor")
+
     params = {item.name: values[item.name] for item in fields(StimulusSpec)}
     params["coupled_sources"] = tuple(params["coupled_sources"])
     return StimulusSpec(**params)
 
 
 def _sample_sim_params_from_prior(seed: int, draws: int) -> list[dict[str, float]]:
-    samples = sample_coupling_parameter_draws(seed, draws)
-    parameter_names = coupling_simulation_parameter_sites()
+    samples = CouplingPriors.sample_parameter_draws(seed, draws)
+    parameter_names = CouplingPriors.simulation_parameter_sites()
     return [
         {name: float(samples[name][index]) for name in parameter_names}
         for index in range(draws)
@@ -64,7 +63,7 @@ def build_run_grid(config: dict[str, Any]) -> list[GridRun]:
     simulation_config = config["simulation"]
     if "participant_parameters" in simulation_config:
         parameters = [
-            coupling_parameters_as_floats(values)
+            CouplingPriors.parameters_as_floats(values)
             for values in _expand_product_config(simulation_config["participant_parameters"])
         ]
     else:
@@ -90,7 +89,7 @@ def _csv_value(value: object) -> object:
 def write_job_grid(output: Path, runs: Sequence[GridRun]) -> None:
     fieldnames = ["job_id", "stimuli_path", "simulation_path", "posterior_path"]
     stimuli_names = tuple(item.name for item in fields(StimulusSpec))
-    simulation_names = coupling_simulation_parameter_sites()
+    simulation_names = CouplingPriors.simulation_parameter_sites()
     fieldnames.extend(f"stimuli_{name}" for name in stimuli_names)
     fieldnames.extend(f"simulation_{name}" for name in simulation_names)
 
@@ -101,9 +100,9 @@ def write_job_grid(output: Path, runs: Sequence[GridRun]) -> None:
             job_path = Path("jobs") / run.run_id
             row = {
                 "job_id": run.run_id,
-                "stimuli_path": str(job_path / "stimuli.zarr"),
-                "simulation_path": str(job_path / "simulation.zarr"),
-                "posterior_path": str(job_path / "posterior.zarr"),
+                "stimuli_path": str(job_path / "stimuli.npz"),
+                "simulation_path": str(job_path / "simulation.npz"),
+                "posterior_path": str(job_path / "posterior.npz"),
             }
             row.update(
                 {

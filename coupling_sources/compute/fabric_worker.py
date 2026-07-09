@@ -17,10 +17,12 @@ from pathlib import Path
 from threading import Event, current_thread, main_thread
 from typing import Any
 
+import numpy as np
+
 from coupling_sources.compute.archives import safe_extract_tar
-from coupling_sources.core.data import MCMCSpecs
+from coupling_sources.core.data import MCMCSpecs, StimulusBatch
 from coupling_sources.core.inference import run_inference
-from coupling_sources.utils.artifacts import read_stimuli_zarr, write_posterior_zarr, write_simulation_zarr
+from coupling_sources.utils.artifacts import Artifacts
 
 POLL_SECONDS = 0.5
 
@@ -144,18 +146,24 @@ def _run_one_job(
             try:
                 simulation_config = json.loads((job_dir / "simulation_parameters.json").read_text())
                 result = run_inference(
-                    stimuli=read_stimuli_zarr(job_dir / "stimuli.zarr"),
+                    stimuli=StimulusBatch.from_config(
+                        Artifacts.read_config(job_dir / "stimuli.npz")
+                    ),
                     simulation_parameters=simulation_config["parameters"],
                     simulation_seed=int(simulation_config["seed"]),
                     mcmc=mcmc,
                     progress_bar=progress_bar,
                     progress_label=job_id,
                 )
-                write_simulation_zarr(job_dir / "simulation.zarr", result["simulation"])
-                write_posterior_zarr(
-                    job_dir / "posterior.zarr",
-                    diagnostics=result["diagnostics"],
-                    samples=result["samples"],
+                Artifacts.write_config(
+                    job_dir / "simulation.npz",
+                    result["simulation"].to_config(),
+                    float_dtype=np.float16,
+                )
+                Artifacts.write_dist_samples(job_dir / "posterior.npz", result["samples"])
+                Artifacts.write_mcmc_diagnostics(
+                    job_dir / "posterior.npz",
+                    result["diagnostics"],
                 )
                 print(f"fit done: {job_id}", flush=True)
                 return {
@@ -163,7 +171,7 @@ def _run_one_job(
                     "ok": True,
                     "started_at": started_at,
                     "finished_at": datetime.now().isoformat(timespec="seconds"),
-                    "posterior_path": str(Path("jobs") / job_id / "posterior.zarr"),
+                    "posterior_path": str(Path("jobs") / job_id / "posterior.npz"),
                     "log_path": str(log_path.relative_to(run_path)),
                     "chain_method": result["chain_method"],
                 }
@@ -194,7 +202,7 @@ def _write_result_archive(
     result_archive_path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(result_archive_path, "w:gz") as archive:
         for job_id in job_ids:
-            posterior_path = run_dir / "jobs" / job_id / "posterior.zarr"
+            posterior_path = run_dir / "jobs" / job_id / "posterior.npz"
             status_path = run_dir / "job_status" / f"{_safe_path_part(job_id)}.json"
             log_path = run_dir / "worker_logs" / worker_label / f"{_safe_path_part(job_id)}.log"
             _add_if_exists(archive, posterior_path, run_dir)

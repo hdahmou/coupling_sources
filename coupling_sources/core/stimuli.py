@@ -1,202 +1,90 @@
 from __future__ import annotations
 
-import math
-
 import jax
 import jax.numpy as jnp
 
 from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, NO_HIDDEN_SOURCE, TRUTH_ESTIMATION
 from coupling_sources.core.data import StimulusBatch, StimulusMetadata, StimulusSpec
-from coupling_sources.utils.angles import mean_angle_difference, optimal_weights
 
 _MAX_REJECTION_ATTEMPTS = 10_000
 
 
 def generate_stimulus(spec: StimulusSpec) -> StimulusBatch:
-    if spec.n_participants < 1:
-        raise ValueError("n_participants must be at least 1")
-    if spec.min_mean_angle_difference < 0.0:
-        raise ValueError("min_mean_angle_difference must be non-negative")
-    if spec.min_mean_angle_difference >= math.pi:
-        raise ValueError("min_mean_angle_difference must be smaller than pi")
-
     n_trials = spec.n_trials_full + spec.n_trials_partial
 
-    # Step 1: Build the source-noise covariance shared by participants for now.
     corr = jnp.eye(spec.n_sources)
-    source_a, source_b = spec.coupled_sources
-    corr = corr.at[source_a, source_b].set(spec.lam)
-    corr = corr.at[source_b, source_a].set(spec.lam)
+    a, b = spec.coupled_sources
+    corr = corr.at[a, b].set(spec.lam).at[b, a].set(spec.lam)
     covariance = spec.sigma**2 * corr
     error_cholesky = jnp.linalg.cholesky(covariance).T
-    correlation_weights = optimal_weights(covariance).astype(covariance.dtype)
-    min_mean_angle_difference = jnp.asarray(
-        spec.min_mean_angle_difference,
-        dtype=covariance.dtype,
-    )
+    resultant_floor = jnp.asarray(spec.resultant_floor, dtype=covariance.dtype)
 
-    def draw_source_choices(key: jax.Array) -> tuple[jax.Array, jax.Array]:
-        key_truth, key_error = jax.random.split(key, 2)
-        truth = jax.random.uniform(
-            key_truth,
-            (n_trials,),
-            minval=0.0,
-            maxval=2 * jnp.pi,
-            dtype=covariance.dtype,
+    base_key = jax.random.PRNGKey(spec.seed)
+    rounds = jnp.arange(spec.n_rounds)
+
+    def keys_for_participant(participant: jax.Array) -> jax.Array:
+        participant_key = jax.random.fold_in(base_key, participant)
+        return jax.vmap(lambda round_: jax.random.fold_in(participant_key, round_))(
+            rounds
         )
-        error = (
-            jax.random.normal(
-                key_error,
-                (n_trials, spec.n_sources),
-                dtype=covariance.dtype,
-            )
-            @ error_cholesky
-        )
-        complete_reports = (truth[..., None] + error) % (2 * jnp.pi)
-        return truth, complete_reports
 
-    def draw_rejected_source_choices(
-        key: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        initial_truth = jnp.zeros((n_trials,), dtype=covariance.dtype)
-        initial_reports = jnp.zeros((n_trials, spec.n_sources), dtype=covariance.dtype)
-        initial_difference = jnp.full((n_trials,), -jnp.inf, dtype=covariance.dtype)
-        initial_attempts = jnp.asarray(0, dtype=jnp.int32)
+    round_keys = jax.vmap(keys_for_participant)(jnp.arange(spec.n_participants))
 
-        def should_continue(carry: tuple[jax.Array, ...]) -> jax.Array:
-            _, attempts, _, _, difference = carry
-            has_rejections = jnp.any(difference < min_mean_angle_difference)
-            has_attempts = attempts < _MAX_REJECTION_ATTEMPTS
-            return jnp.logical_and(has_rejections, has_attempts)
-
-        def draw_attempt(carry: tuple[jax.Array, ...]) -> tuple[jax.Array, ...]:
-            key, attempts, truth, complete_reports, difference = carry
-            key, sample_key = jax.random.split(key, 2)
-            candidate_truth, candidate_reports = draw_source_choices(sample_key)
-            candidate_difference = mean_angle_difference(
-                candidate_reports,
-                correlation_weights,
-            )
-            rejected = difference < min_mean_angle_difference
-            truth = jnp.where(rejected, candidate_truth, truth)
-            complete_reports = jnp.where(
-                rejected[..., None],
-                candidate_reports,
-                complete_reports,
-            )
-            difference = jnp.where(rejected, candidate_difference, difference)
-            return (
-                key,
-                attempts + 1,
-                truth,
-                complete_reports,
-                difference,
-            )
-
-        _, _, truth, complete_reports, difference = jax.lax.while_loop(
-            should_continue,
-            draw_attempt,
-            (
-                key,
-                initial_attempts,
-                initial_truth,
-                initial_reports,
-                initial_difference,
-            ),
-        )
-        return truth, complete_reports, difference
-
-    # Step 2: Generate one independent round for one participant.
     def generate_round(key: jax.Array) -> tuple[jax.Array, ...]:
-        key_choices, key_hide_trial, key_hide_source = jax.random.split(key, 3)
-        truth, complete_reports, difference = draw_rejected_source_choices(key_choices)
-
-        hide_order = jnp.argsort(
-            jax.random.uniform(key_hide_trial, (n_trials,)),
-            axis=-1,
-        )
-        hidden_trials = jnp.zeros((n_trials,), dtype=bool)
-        hidden_trials = hidden_trials.at[hide_order[:spec.n_trials_partial]].set(True)
-        hidden_index = jax.random.randint(
-            key_hide_source,
-            (n_trials,),
-            minval=0,
-            maxval=spec.n_sources,
-        )
-        hidden_source = jnp.where(
-            hidden_trials,
-            hidden_index,
-            NO_HIDDEN_SOURCE,
-        ).astype(jnp.int32)
-
-        trial_index = jnp.arange(n_trials)
-        hidden_values = jnp.where(
-            hidden_trials,
-            jnp.nan,
-            complete_reports[trial_index, hidden_index],
-        )
-        visible_reports = complete_reports.at[trial_index, hidden_index].set(
-            hidden_values
+        key_schedule, key_trials = jax.random.split(key)
+        trial_type, hidden_source = _draw_trial_schedule(key_schedule, spec, n_trials)
+        truth, complete_reports, resultant_length = _draw_until_resultant_floor(
+            key_trials,
+            spec,
+            n_trials,
+            error_cholesky,
+            resultant_floor,
         )
 
-        trial_type = jnp.where(
-            hidden_source >= 0, HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
-        ).astype(jnp.int32)
+        is_probe = trial_type == HIDDEN_SOURCE_PROBE
+        hide_index = jnp.clip(hidden_source, 0, spec.n_sources - 1)
+        trials = jnp.arange(n_trials)
+        visible_reports = complete_reports.at[trials, hide_index].set(
+            jnp.where(is_probe, jnp.nan, complete_reports[trials, hide_index])
+        )
+
         return (
             visible_reports,
             hidden_source,
             trial_type,
             complete_reports,
             truth,
-            difference,
+            resultant_length,
         )
 
-    # Step 3: Derive a deterministic PRNG key for each participant and round.
-    base_key = jax.random.PRNGKey(spec.seed)
-    round_indices = jnp.arange(spec.n_rounds)
+    flat_rounds = jax.lax.map(
+        generate_round,
+        round_keys.reshape((-1, 2)),
+    )
+    round_grids = tuple(
+        value.reshape((spec.n_participants, spec.n_rounds, *value.shape[1:]))
+        for value in flat_rounds
+    )
+    resultant_length = round_grids[-1]
 
-    def round_keys_for_participant(participant: jax.Array) -> jax.Array:
-        participant_key = jax.random.fold_in(base_key, participant)
-        return jax.vmap(
-            lambda round_index: jax.random.fold_in(participant_key, round_index)
-        )(round_indices)
+    if n_trials > 0 and spec.resultant_floor > 0.0:
+        lowest = float(jax.device_get(jnp.min(resultant_length)))
+        if lowest < spec.resultant_floor:
+            raise RuntimeError(
+                f"could not satisfy resultant_floor after {_MAX_REJECTION_ATTEMPTS} "
+                f"attempts; lowest resultant was {lowest:.6g}, "
+                f"floor was {spec.resultant_floor:.6g}"
+            )
 
-    round_keys = jax.vmap(round_keys_for_participant)(jnp.arange(spec.n_participants))
-
-    # Step 4: Map one-round generation over rounds, then participants.
-    flat_round_keys = round_keys.reshape((-1, 2))
     (
         visible_reports,
         hidden_source,
         trial_type,
         complete_reports,
         truth,
-        mean_angle_differences,
-    ) = jax.lax.map(generate_round, flat_round_keys)
+        resultant_length,
+    ) = round_grids
 
-    def unflatten_rounds(value: jax.Array) -> jax.Array:
-        return value.reshape(
-            (spec.n_participants, spec.n_rounds, *value.shape[1:])
-        )
-
-    visible_reports = unflatten_rounds(visible_reports)
-    hidden_source = unflatten_rounds(hidden_source)
-    trial_type = unflatten_rounds(trial_type)
-    complete_reports = unflatten_rounds(complete_reports)
-    truth = unflatten_rounds(truth)
-    mean_angle_differences = unflatten_rounds(mean_angle_differences)
-
-    if spec.min_mean_angle_difference > 0.0 and n_trials > 0:
-        lowest_difference = float(jax.device_get(jnp.min(mean_angle_differences)))
-        if lowest_difference < spec.min_mean_angle_difference:
-            raise RuntimeError(
-                "could not generate stimuli satisfying "
-                "min_mean_angle_difference after "
-                f"{_MAX_REJECTION_ATTEMPTS} rejection attempts; "
-                f"lowest difference was {lowest_difference:.6g}"
-            )
-
-    # Step 5: Package arrays in the model's participant, round, trial, source shape.
     return StimulusBatch(
         visible_reports=visible_reports,
         hidden_source=hidden_source,
@@ -207,5 +95,110 @@ def generate_stimulus(spec: StimulusSpec) -> StimulusBatch:
             true_direction=truth,
             source_choices=visible_reports,
             stimulus_covariance=covariance,
+            resultant_length=resultant_length,
         ),
     )
+
+
+def _draw_trial_schedule(
+    key: jax.Array,
+    spec: StimulusSpec,
+    n_trials: int,
+) -> tuple[jax.Array, jax.Array]:
+    """Trial types plus a balanced hidden-source assignment for probes."""
+    key_order, key_hidden_source = jax.random.split(key)
+    n_probes_per_source = spec.n_trials_partial // spec.n_sources
+
+    trial_type = jnp.concatenate(
+        [
+            jnp.full((spec.n_trials_full,), TRUTH_ESTIMATION, dtype=jnp.int32),
+            jnp.full((spec.n_trials_partial,), HIDDEN_SOURCE_PROBE, dtype=jnp.int32),
+        ]
+    )
+
+    balanced_hidden_sources = jnp.tile(
+        jnp.arange(spec.n_sources, dtype=jnp.int32),
+        n_probes_per_source,
+    )
+    hidden_order = jax.random.permutation(key_hidden_source, spec.n_trials_partial)
+    hidden_source = jnp.concatenate(
+        [
+            jnp.full((spec.n_trials_full,), NO_HIDDEN_SOURCE, dtype=jnp.int32),
+            balanced_hidden_sources[hidden_order],
+        ]
+    )
+
+    trial_order = jax.random.permutation(key_order, n_trials)
+    return trial_type[trial_order], hidden_source[trial_order]
+
+
+def _draw_until_resultant_floor(
+    key: jax.Array,
+    spec: StimulusSpec,
+    n_trials: int,
+    error_cholesky: jax.Array,
+    resultant_floor: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Redraw only trials whose resultant is below the floor."""
+    truth0 = jnp.zeros((n_trials,), dtype=error_cholesky.dtype)
+    reports0 = jnp.zeros((n_trials, spec.n_sources), dtype=error_cholesky.dtype)
+    resultant0 = jnp.full((n_trials,), -jnp.inf, dtype=error_cholesky.dtype)
+
+    def draw_complete_reports(key: jax.Array) -> tuple[jax.Array, jax.Array]:
+        key_truth, key_error = jax.random.split(key)
+        truth = jax.random.uniform(
+            key_truth,
+            (n_trials,),
+            minval=0.0,
+            maxval=2 * jnp.pi,
+            dtype=error_cholesky.dtype,
+        )
+        error = (
+            jax.random.normal(
+                key_error,
+                (n_trials, spec.n_sources),
+                dtype=error_cholesky.dtype,
+            )
+            @ error_cholesky
+        )
+        reports = (truth[..., None] + error) % (2 * jnp.pi)
+        return truth, reports
+
+    def below_floor(resultant: jax.Array) -> jax.Array:
+        return resultant < resultant_floor
+
+    def keep_going(carry) -> jax.Array:
+        _, attempts, _, _, resultant = carry
+        return jnp.logical_and(
+            jnp.any(below_floor(resultant)),
+            attempts < _MAX_REJECTION_ATTEMPTS,
+        )
+
+    def attempt(carry):
+        key, attempts, truth, reports, resultant = carry
+        key, subkey = jax.random.split(key)
+        new_truth, new_reports = draw_complete_reports(subkey)
+        new_resultant = _resultant_length(new_reports)
+        replace = below_floor(resultant)
+        truth = jnp.where(replace, new_truth, truth)
+        reports = jnp.where(replace[..., None], new_reports, reports)
+        resultant = jnp.where(replace, new_resultant, resultant)
+        return key, attempts + 1, truth, reports, resultant
+
+    _, _, truth, reports, resultant = jax.lax.while_loop(
+        keep_going,
+        attempt,
+        (key, jnp.int32(0), truth0, reports0, resultant0),
+    )
+    return truth, reports, resultant
+
+
+def _resultant_length(reports: jax.Array) -> jax.Array:
+    """Mean resultant length of the four arrows, in [0, 1].
+
+    Near 1 when the arrows form one broad fan; near 0 when they split into two
+    opposed clumps. Rotation-invariant, so it does not depend on the trial's truth.
+    """
+    x = jnp.cos(reports).sum(-1)
+    y = jnp.sin(reports).sum(-1)
+    return jnp.hypot(x, y) / reports.shape[-1]
