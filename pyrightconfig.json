@@ -1,0 +1,10 @@
+{
+  "include": [
+    "coupling_sources",
+    "scripts",
+    "tests"
+  ],
+  "pythonVersion": "3.14",
+  "venvPath": ".",
+  "venv": ".venv"
+}

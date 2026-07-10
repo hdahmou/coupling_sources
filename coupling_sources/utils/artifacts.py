@@ -85,7 +85,7 @@ class Artifacts:
         arrays = cls._flatten_tree(tree, float_dtype=float_dtype)
         arrays[cls.ATTRS_KEY] = np.array(json.dumps(cls._json_ready(attrs)))
         with path.open("wb") as file:
-            np.savez_compressed(file, **arrays)
+            np.savez_compressed(file, allow_pickle=False, **arrays)
 
     @classmethod
     def _read(cls, path: Path) -> tuple[Tree, dict[str, Any]]:

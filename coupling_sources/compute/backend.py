@@ -22,6 +22,20 @@ DEFAULT_REMOTE_PYTHON = ".venv/bin/python"
 DEFAULT_JAX_COMPILATION_CACHE_DIR = ".jax_cache"
 
 
+def _config_int(value: object, name: str) -> int:
+    if not isinstance(value, int | float | str):
+        raise ValueError(f"{name} must be an integer")
+    return int(value)
+
+
+def _config_mapping(value: object | None, name: str) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{name} must be an object")
+    return {str(key): item for key, item in value.items()}
+
+
 @dataclass(frozen=True)
 class Machine:
     host: str
@@ -41,7 +55,10 @@ class Machine:
         if user is not None and "@" not in host:
             host = f"{user}@{host}"
 
-        max_concurrent_fits = int(values.get("max_concurrent_fits", 0))
+        max_concurrent_fits = _config_int(
+            values.get("max_concurrent_fits", 0),
+            "max_concurrent_fits",
+        )
         if max_concurrent_fits < 0:
             raise ValueError(f"max_concurrent_fits cannot be negative for {host}")
 
@@ -53,9 +70,12 @@ class Machine:
             max_concurrent_fits=max_concurrent_fits,
             project_path=None if project_path is None else Path(str(project_path)),
             python=None if python is None else str(python),
-            port=None if port is None else int(port),
-            env=dict(values.get("env") or {}),
-            connect_kwargs=dict(values.get("connect_kwargs") or {}),
+            port=None if port is None else _config_int(port, "port"),
+            env=_config_mapping(values.get("env"), "env"),
+            connect_kwargs=_config_mapping(
+                values.get("connect_kwargs"),
+                "connect_kwargs",
+            ),
         )
 
     @property
@@ -108,8 +128,11 @@ class ComputeConfig:
         return cls(
             machines=machines,
             python=str(values.get("python", DEFAULT_REMOTE_PYTHON)),
-            env=dict(values.get("env") or {}),
-            connect_kwargs=dict(values.get("connect_kwargs") or {}),
+            env=_config_mapping(values.get("env"), "env"),
+            connect_kwargs=_config_mapping(
+                values.get("connect_kwargs"),
+                "connect_kwargs",
+            ),
         )
 
     @property

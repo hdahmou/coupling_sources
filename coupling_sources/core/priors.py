@@ -44,7 +44,7 @@ class CouplingPriors:
             name: jnp.asarray(values[name], dtype=jnp.float64)
             for name in CouplingPriors.PARAMETER_SITES
         }
-        params["c0"] = jnp.asarray(values.get("c0", 0.0), dtype=jnp.float64)
+        params["c0"] = jnp.asarray(values["c0"], dtype=jnp.float64)
         return params
 
     @staticmethod
@@ -56,12 +56,19 @@ class CouplingPriors:
         }
 
     @staticmethod
-    def sample_parameter_draws(seed: int, draws: int) -> dict[str, jax.Array]:
+    def sample_parameter_draws(
+        seed: int,
+        draws: int,
+        c0: float | jax.Array,
+    ) -> dict[str, jax.Array]:
         priors = CouplingPriors.distributions()
         keys = jax.random.split(jax.random.PRNGKey(seed), len(priors))
         samples = {
             name: jnp.asarray(prior.sample(key, sample_shape=(draws,)))
             for key, (name, prior) in zip(keys, priors.items(), strict=True)
         }
-        samples["c0"] = jnp.zeros((draws,), dtype=jnp.float64)
+        samples["c0"] = jnp.broadcast_to(
+            jnp.asarray(c0, dtype=jnp.float64),
+            (draws,),
+        )
         return samples

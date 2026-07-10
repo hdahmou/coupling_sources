@@ -21,6 +21,7 @@
   },
   "simulation": {
     "seed": 201,
+    "c0": 0.0,
     "participant_parameters": {
       "learningRate": 0.2,
       "g_y": 1.0,

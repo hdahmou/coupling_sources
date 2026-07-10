@@ -163,6 +163,7 @@ def _run_one_job(
 
                 fit_result = fit_simulation(
                     simulation=simulation,
+                    c0=simulation_config["parameters"]["c0"],
                     mcmc=mcmc,
                     progress_bar=progress_bar,
                     progress_label=job_id,

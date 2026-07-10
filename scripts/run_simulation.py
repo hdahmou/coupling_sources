@@ -27,6 +27,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--g-y", type=float, required=True)
     parser.add_argument("--g-z", type=float, required=True)
     parser.add_argument("--vm-concentration", type=float, required=True)
+    parser.add_argument("--c0", type=float, required=True)
     parser.add_argument("--output", type=Path, required=True, help="Simulation .npz artifact.")
     return parser.parse_args(argv)
 
@@ -42,6 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "g_y": args.g_y,
             "g_z": args.g_z,
             "vmConcentration": args.vm_concentration,
+            "c0": args.c0,
         },
     )
     Artifacts.write_config(args.output, simulation.to_config(), float_dtype=np.float16)

@@ -8,7 +8,6 @@ notebook cells readable while using the live model/simulator paths in
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any, Mapping
 
 import jax
@@ -17,7 +16,12 @@ import numpy as np
 import numpyro.distributions as dist
 
 from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
-from coupling_sources.core.data import SimulationBatch, StimulusBatch, StimulusMetadata
+from coupling_sources.core.data import (
+    CouplingDiagnostics,
+    SimulationBatch,
+    StimulusBatch,
+    StimulusMetadata,
+)
 from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.core.simulator import simulate_coupling
 
@@ -77,20 +81,6 @@ class CheckDesign:
             hidden_predictions=simulation.hidden_predictions,
             responses=simulation.responses,
         )
-
-    def model_kwargs(
-        self,
-        *,
-        include_observations: bool = False,
-        simulation: SimulationBatch | None = None,
-    ) -> dict[str, object]:
-        return {
-            "batch": self.batch(
-                include_observations=include_observations,
-                simulation=simulation,
-            )
-        }
-
 
 def wrap_pi(angle: np.ndarray | jax.Array) -> np.ndarray:
     """Wrap radians to (-pi, pi]."""
@@ -229,21 +219,22 @@ def make_locked_design(
 
 
 def sim_params_from_prior_draw(prior_draws: Mapping[str, np.ndarray | jax.Array], index: int) -> dict[str, float]:
-    draw_count = len(np.asarray(prior_draws["learningRate"]).reshape(-1))
-    c0 = np.asarray(prior_draws.get("c0", np.zeros(draw_count))).reshape(-1)[index]
     return {
         "learningRate": float(np.asarray(prior_draws["learningRate"]).reshape(-1)[index]),
         "g_y": float(np.asarray(prior_draws["g_y"]).reshape(-1)[index]),
         "g_z": float(np.asarray(prior_draws["g_z"]).reshape(-1)[index]),
         "vmConcentration": float(np.asarray(prior_draws["vmConcentration"]).reshape(-1)[index]),
-        "c0": float(c0),
+        "c0": float(np.asarray(prior_draws["c0"]).reshape(-1)[index]),
     }
 
 
 def simulate_design(seed: int, design: CheckDesign, params: Mapping[str, float]) -> SimulationBatch:
+    stimuli = design.batch()
+    if not isinstance(stimuli, StimulusBatch):
+        raise TypeError("design.batch() returned observations unexpectedly")
     return simulate_coupling(
         seed=seed,
-        batch=design.batch(),
+        batch=stimuli,
         parameters=params,
     )
 
@@ -335,16 +326,25 @@ def parameter_transforms(samples: Mapping[str, np.ndarray | jax.Array]) -> dict[
     }
 
 
-def posterior_draw_dict(samples: Mapping[str, np.ndarray | jax.Array], draw_index: int) -> dict[str, float]:
+def posterior_draw_dict(
+    samples: Mapping[str, np.ndarray | jax.Array],
+    draw_index: int,
+    c0: float,
+) -> dict[str, float]:
     return {
         name: float(np.asarray(samples[name]).reshape(-1)[draw_index])
         for name in CouplingPriors.parameter_sites()
-    }
+    } | {"c0": c0}
 
 
-def states_for_params(design: CheckDesign, params: Mapping[str, float]) -> object:
+def states_for_params(
+    design: CheckDesign,
+    params: Mapping[str, float],
+) -> CouplingDiagnostics:
     simulation = simulate_design(0, design, params)
-    return SimpleNamespace(**simulation.diagnostics)
+    if simulation.diagnostics is None:
+        raise RuntimeError("simulation is missing diagnostics")
+    return simulation.diagnostics
 
 
 def response_log_likelihood_by_trial(simulation: SimulationBatch, design: CheckDesign, params: Mapping[str, float]) -> np.ndarray:
@@ -363,6 +363,7 @@ def posterior_predictive(
     seed: int,
     samples: Mapping[str, np.ndarray | jax.Array],
     design: CheckDesign,
+    c0: float,
     max_draws: int = 100,
 ) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed)
@@ -374,7 +375,7 @@ def posterior_predictive(
     truth_means = []
     hidden_means = []
     for draw_index in draw_indices:
-        params = posterior_draw_dict(samples, int(draw_index))
+        params = posterior_draw_dict(samples, int(draw_index), c0)
         states = states_for_params(design, params)
         truth_mean = np.asarray(states.truth_mean_angle)
         hidden_mean = np.asarray(states.hidden_mean_angle)

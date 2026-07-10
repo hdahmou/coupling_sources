@@ -27,6 +27,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--g-y", type=float, required=True)
     parser.add_argument("--g-z", type=float, required=True)
     parser.add_argument("--vm-concentration", type=float, required=True)
+    parser.add_argument("--c0", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--num-warmup", type=int, required=True)
     parser.add_argument("--num-samples", type=int, required=True)
@@ -59,6 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "g_y": args.g_y,
             "g_z": args.g_z,
             "vmConcentration": args.vm_concentration,
+            "c0": args.c0,
         },
         simulation_seed=args.simulation_seed,
         mcmc=mcmc,

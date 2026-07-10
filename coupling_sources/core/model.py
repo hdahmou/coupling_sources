@@ -17,8 +17,8 @@ Conventions
 * Deterministic bookkeeping sites are prefixed with ``~`` so they can be
   discarded from MCMC traces; the suffix ``t3`` is the trial number.
 * Pairwise quantities (``~a_t*``, ``~c_t*``) are symmetric ``(..., S, S)``
-  matrices with a zero diagonal. The preregistered neutral origin
-  c_{ij,p,0} = 0 is a constant, not a site.
+  matrices with a zero diagonal. The initial off-diagonal score
+  c_{ij,p,0} = c0 is a fixed model input recorded at ``~$c_0$``.
 * Each trial is either a truth-estimation trial (observed at ``y_t*``) or a
   hidden-source-estimation trial (observed at ``z_t*``); the branch that does
   not apply, and invalid trials, are masked out of the likelihood.
@@ -32,23 +32,9 @@ import numpyro
 import numpyro.distributions as dist
 
 from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE
-from coupling_sources.core.data import SimulationBatch, StimulusBatch
+from coupling_sources.core.data import SimulationBatch
 from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.utils.angles import circular_mean
-
-
-def _split_batch(
-    batch: StimulusBatch | SimulationBatch,
-) -> tuple[StimulusBatch, jnp.ndarray | None, jnp.ndarray | None]:
-    """Return ``(stimuli, truth_estimates, hidden_predictions)``.
-
-    The response arrays are ``None`` when the batch carries stimuli only, in
-    which case the model runs in prior-predictive mode.
-    """
-
-    if isinstance(batch, SimulationBatch):
-        return batch.stimuli, batch.truth_estimates, batch.hidden_predictions
-    return batch, None, None
 
 
 def _relative_agreement(
@@ -119,26 +105,38 @@ def _visible_softmax(
     return jax.nn.softmax(gain * scores + jnp.log(visible_sources), axis=-1)
 
 
-def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
-    stimuli, truth_estimates, hidden_predictions = _split_batch(batch)
+def model_coupling(batch: SimulationBatch, c0: float | jax.Array) -> None:
+    stimuli = batch.stimuli
     n_participants, n_rounds, n_trials, n_sources = stimuli.visible_reports.shape
     off_diagonal = ~jnp.eye(n_sources, dtype=bool)
 
     priors = CouplingPriors.distributions()
-    learningRate = numpyro.sample("learningRate", priors["learningRate"])
-    g_y = numpyro.sample("g_y", priors["g_y"])
-    g_z = numpyro.sample("g_z", priors["g_z"])
-    vmConcentration = numpyro.sample("vmConcentration", priors["vmConcentration"])
+    learningRate = jnp.asarray(
+        numpyro.sample("learningRate", priors["learningRate"])
+    )
+    g_y = jnp.asarray(numpyro.sample("g_y", priors["g_y"]))
+    g_z = jnp.asarray(numpyro.sample("g_z", priors["g_z"]))
+    vmConcentration = jnp.asarray(
+        numpyro.sample("vmConcentration", priors["vmConcentration"])
+    )
+    initial_score = jnp.asarray(
+        numpyro.deterministic(
+            "~$c_0$",
+            jnp.asarray(c0, dtype=stimuli.visible_reports.dtype),
+        )
+    )
 
     participants = numpyro.plate("participants", n_participants, dim=-2)
     rounds = numpyro.plate("rounds", n_rounds, dim=-1)
     with participants, rounds:
-        # c_{ij,p,0} = 0: every pair starts at the preregistered neutral origin.
-        pair_scores = jnp.zeros((n_participants, n_rounds, n_sources, n_sources))
+        pair_scores = jnp.broadcast_to(
+            initial_score * off_diagonal,
+            (n_participants, n_rounds, n_sources, n_sources),
+        )
 
         for trial_index in range(n_trials):
             reports_raw = stimuli.visible_reports[:, :, trial_index, :]
-            hidden_source = stimuli.hidden_source[:, :, trial_index]
+            hidden_source = jnp.asarray(stimuli.hidden_source[:, :, trial_index])
             valid_trial = stimuli.valid_trials[:, :, trial_index]
             is_probe = stimuli.trial_type[:, :, trial_index] == HIDDEN_SOURCE_PROBE
 
@@ -152,55 +150,69 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
             )
 
             # Observe: relative agreement a of the visible pairs.
-            a = numpyro.deterministic(
-                f"~$a_{{t={trial_index}}}$", _relative_agreement(reports, visible_pairs)
+            a = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$a_{{t={trial_index}}}$",
+                    _relative_agreement(reports, visible_pairs),
+                )
             )
 
             # Update: c <- c + learningRate (a - c) on visible pairs of valid trials;
             # all other pairs are carried forward unchanged.
             update_pairs = visible_pairs & valid_trial[..., None, None]
-            pair_scores = numpyro.deterministic(
-                f"~$c_{{t={trial_index}}}$",
-                pair_scores + update_pairs * learningRate * (a - pair_scores),
+            pair_scores = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$c_{{t={trial_index}}}$",
+                    pair_scores
+                    + update_pairs * learningRate * (a - pair_scores),
+                )
             )
 
             # Respond, truth-estimation branch: redundancy discounting.
-            η_y = numpyro.deterministic(
-                f"~$η^y_{{t={trial_index}}}$",
-                _truth_scores(pair_scores, visible_sources, off_diagonal),
+            η_y = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$η^y_{{t={trial_index}}}$",
+                    _truth_scores(pair_scores, visible_sources, off_diagonal),
+                )
             )
-            w = numpyro.deterministic(
-                f"~$w_{{t={trial_index}}}$", _visible_softmax(η_y, g_y, visible_sources)
+            w = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$w_{{t={trial_index}}}$",
+                    _visible_softmax(η_y, g_y, visible_sources),
+                )
             )
-            μ = numpyro.deterministic(
-                f"~$μ_{{t={trial_index}}}$", circular_mean(reports, w)
+            μ = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$μ_{{t={trial_index}}}$",
+                    circular_mean(reports, w),
+                )
             )
 
             # Respond, hidden-source branch: relatedness boosting.
-            η_z = numpyro.deterministic(
-                f"~$η^z_{{t={trial_index}}}$",
-                _probe_scores(pair_scores, hidden_source, visible_sources),
+            η_z = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$η^z_{{t={trial_index}}}$",
+                    _probe_scores(pair_scores, hidden_source, visible_sources),
+                )
             )
-            v = numpyro.deterministic(
-                f"~$v_{{t={trial_index}}}$", _visible_softmax(η_z, g_z, visible_sources)
+            v = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$v_{{t={trial_index}}}$",
+                    _visible_softmax(η_z, g_z, visible_sources),
+                )
             )
-            ν = numpyro.deterministic(
-                f"~$ν_{{t={trial_index}}}$", circular_mean(reports, v)
+            ν = jnp.asarray(
+                numpyro.deterministic(
+                    f"~$ν_{{t={trial_index}}}$",
+                    circular_mean(reports, v),
+                )
             )
 
             # Likelihood: each valid trial contributes to exactly one branch.
             y_mask = valid_trial & ~is_probe
             z_mask = valid_trial & is_probe
-            y_obs = (
-                None
-                if truth_estimates is None
-                else jnp.where(y_mask, truth_estimates[:, :, trial_index], 0.0)
-            )
-            z_obs = (
-                None
-                if hidden_predictions is None
-                else jnp.where(z_mask, hidden_predictions[:, :, trial_index], 0.0)
-            )
+            y_obs = jnp.where(y_mask, batch.truth_estimates[:, :, trial_index], 0.0)
+            z_obs = jnp.where(z_mask, batch.hidden_predictions[:, :, trial_index], 0.0)
             with numpyro.handlers.mask(mask=y_mask):
                 numpyro.sample(
                     f"$y_{{t={trial_index}}}$",

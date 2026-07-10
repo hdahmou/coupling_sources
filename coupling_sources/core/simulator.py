@@ -21,7 +21,7 @@ def simulate_coupling(
     batch: StimulusBatch,
     parameters: Mapping[str, Any],
 ) -> SimulationBatch:
-    """Simulate responses for a generated coupling batch."""
+    """Simulate responses using parameters that include the fixed ``c0``."""
     params = CouplingPriors.normalize_parameters(parameters)
     response_key = jax.random.PRNGKey(seed)
 

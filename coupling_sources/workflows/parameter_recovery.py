@@ -97,6 +97,8 @@ def _parallel_chains_per_fit(mcmc_config: dict[str, object]) -> int | None:
     value = mcmc_config.get(PARALLEL_CHAINS_PER_FIT_KEY)
     if value is None:
         return None
+    if not isinstance(value, int | float | str):
+        raise ValueError(f"mcmc.{PARALLEL_CHAINS_PER_FIT_KEY} must be an integer")
 
     count = int(value)
     if count < 1:
@@ -146,6 +148,7 @@ def run_parameter_recovery(
             prior_samples = CouplingPriors.sample_parameter_draws(
                 diagnostic_prior_seed,
                 diagnostic_prior_draws,
+                simulation_config["c0"],
             )
             Artifacts.write_dist_samples(base_job_dir / "prior.npz", prior_samples)
             write_job_grid(base_job_dir / "job_grid.csv", runs)

@@ -46,8 +46,12 @@ def _stimulus_parameters(values: Mapping[str, Any]) -> StimulusSpec:
     return StimulusSpec(**params)
 
 
-def _sample_sim_params_from_prior(seed: int, draws: int) -> list[dict[str, float]]:
-    samples = CouplingPriors.sample_parameter_draws(seed, draws)
+def _sample_sim_params_from_prior(
+    seed: int,
+    draws: int,
+    c0: float,
+) -> list[dict[str, float]]:
+    samples = CouplingPriors.sample_parameter_draws(seed, draws, c0)
     parameter_names = CouplingPriors.simulation_parameter_sites()
     return [
         {name: float(samples[name][index]) for name in parameter_names}
@@ -61,9 +65,10 @@ def build_run_grid(config: dict[str, Any]) -> list[GridRun]:
         for values in _expand_product_config(config["stimuli"])
     ]
     simulation_config = config["simulation"]
+    c0 = float(simulation_config["c0"])
     if "participant_parameters" in simulation_config:
         parameters = [
-            CouplingPriors.parameters_as_floats(values)
+            CouplingPriors.parameters_as_floats({**values, "c0": c0})
             for values in _expand_product_config(simulation_config["participant_parameters"])
         ]
     else:
@@ -71,6 +76,7 @@ def build_run_grid(config: dict[str, Any]) -> list[GridRun]:
         parameters = _sample_sim_params_from_prior(
             seed=prior["seed"],
             draws=prior["parameter_draws"],
+            c0=c0,
         )
 
     run_inputs = product(stimuli, parameters)
@@ -98,7 +104,7 @@ def write_job_grid(output: Path, runs: Sequence[GridRun]) -> None:
         writer.writeheader()
         for run in runs:
             job_path = Path("jobs") / run.run_id
-            row = {
+            row: dict[str, object] = {
                 "job_id": run.run_id,
                 "stimuli_path": str(job_path / "stimuli.npz"),
                 "simulation_path": str(job_path / "simulation.npz"),

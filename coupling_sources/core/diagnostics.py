@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 import numpyro.diagnostics as diagnostics
+from numpyro.infer import MCMC
 
 from coupling_sources.core.priors import CouplingPriors
 
 
-def mcmc_diagnostics(mcmc: object) -> dict[str, object]:
+def mcmc_diagnostics(mcmc: MCMC) -> dict[str, object]:
     grouped_samples = mcmc.get_samples(group_by_chain=True)
     parameter_names = CouplingPriors.parameter_sites()
     try:

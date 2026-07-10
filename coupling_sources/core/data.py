@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, fields, replace
 from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+from numpy.typing import NDArray
+
+Array = jax.Array | NDArray[Any]
 
 
 @dataclass(frozen=True)
@@ -41,11 +45,11 @@ class StimulusSpec:
 
 @dataclass(frozen=True)
 class StimulusMetadata:
-    complete_reports: jax.Array
-    true_direction: jax.Array
-    source_choices: jax.Array
-    stimulus_covariance: jax.Array
-    resultant_length: jax.Array
+    complete_reports: Array
+    true_direction: Array
+    source_choices: Array
+    stimulus_covariance: Array
+    resultant_length: Array
 
     def to_config(self) -> dict[str, Any]:
         return {
@@ -63,10 +67,10 @@ class StimulusMetadata:
 
 @dataclass(frozen=True)
 class StimulusBatch:
-    visible_reports: jax.Array
-    hidden_source: jax.Array
-    trial_type: jax.Array
-    valid_trials: jax.Array
+    visible_reports: Array
+    hidden_source: Array
+    trial_type: Array
+    valid_trials: Array
     metadata: StimulusMetadata
 
     def to_config(self) -> dict[str, Any]:
@@ -98,17 +102,17 @@ class MCMCSpecs:
 
 @dataclass(frozen=True)
 class CouplingDiagnostics(Mapping[str, Any]):
-    visible_source_mask: jax.Array
-    relative_agreement: jax.Array
-    pre_update_pair_scores: jax.Array
-    pair_scores: jax.Array
-    truth_source_scores: jax.Array
-    probe_source_scores: jax.Array
-    truth_weights: jax.Array
-    probe_weights: jax.Array
-    truth_mean_angle: jax.Array
-    hidden_mean_angle: jax.Array
-    response_mean_angle: jax.Array
+    visible_source_mask: Array
+    relative_agreement: Array
+    pre_update_pair_scores: Array
+    pair_scores: Array
+    truth_source_scores: Array
+    probe_source_scores: Array
+    truth_weights: Array
+    probe_weights: Array
+    truth_mean_angle: Array
+    hidden_mean_angle: Array
+    response_mean_angle: Array
 
     def __getitem__(self, key: str) -> Any:
         if any(item.name == key for item in fields(self)):
@@ -132,16 +136,16 @@ class CouplingDiagnostics(Mapping[str, Any]):
 @dataclass(frozen=True)
 class SimulationBatch:
     stimuli: StimulusBatch
-    truth_estimates: jax.Array
-    hidden_predictions: jax.Array
-    responses: jax.Array
+    truth_estimates: Array
+    hidden_predictions: Array
+    responses: Array
     participant_parameters: Mapping[str, Any] | None = None
-    diagnostics: CouplingDiagnostics | Mapping[str, Any] = field(default_factory=dict)
+    diagnostics: CouplingDiagnostics | None = None
 
     def to_config(self) -> dict[str, Any]:
         if self.participant_parameters is None:
             raise KeyError("simulation is missing participant_parameters")
-        if not self.diagnostics:
+        if self.diagnostics is None:
             raise KeyError("simulation is missing diagnostics")
 
         return {
@@ -150,11 +154,7 @@ class SimulationBatch:
             "hidden_predictions": self.hidden_predictions,
             "responses": self.responses,
             "participant_parameters": dict(self.participant_parameters),
-            "diagnostics": (
-                self.diagnostics.to_config()
-                if isinstance(self.diagnostics, CouplingDiagnostics)
-                else dict(self.diagnostics)
-            ),
+            "diagnostics": self.diagnostics.to_config(),
         }
 
     @classmethod

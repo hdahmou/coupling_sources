@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -31,14 +32,17 @@ def simulation_frame(simulation: SimulationBatch) -> pd.DataFrame:
     params = simulation.participant_parameters
     if params is None:
         raise ValueError("simulation is missing participant_parameters")
-    pair_scores = np.asarray(simulation.diagnostics["pair_scores"])
+    diagnostics = simulation.diagnostics
+    if diagnostics is None:
+        raise ValueError("simulation is missing diagnostics")
+    pair_scores = np.asarray(diagnostics.pair_scores)
     off_diagonal = 1.0 - np.eye(pair_scores.shape[-1])
     mean_pair_score = (pair_scores * off_diagonal).sum(axis=(-2, -1)) / max(int(off_diagonal.sum()), 1)
     is_probe = (jnp.asarray(stimuli.trial_type) == HIDDEN_SOURCE_PROBE) & jnp.asarray(stimuli.valid_trials)
-    truth_log_prob = dist.VonMises(simulation.diagnostics["truth_mean_angle"], params["vmConcentration"]).log_prob(
+    truth_log_prob = dist.VonMises(diagnostics.truth_mean_angle, params["vmConcentration"]).log_prob(
         simulation.truth_estimates
     )
-    hidden_log_prob = dist.VonMises(simulation.diagnostics["hidden_mean_angle"], params["vmConcentration"]).log_prob(
+    hidden_log_prob = dist.VonMises(diagnostics.hidden_mean_angle, params["vmConcentration"]).log_prob(
         simulation.hidden_predictions
     )
     response_log_prob = jnp.where(
@@ -59,9 +63,9 @@ def simulation_frame(simulation: SimulationBatch) -> pd.DataFrame:
             "valid_trial": np.asarray(stimuli.valid_trials).ravel().astype(bool),
             "n_visible_sources": np.isfinite(visible_reports).sum(axis=-1).ravel(),
             "is_probe": np.asarray(is_probe).ravel().astype(bool),
-            "truth_mean_angle": np.asarray(simulation.diagnostics["truth_mean_angle"]).ravel(),
-            "hidden_mean_angle": np.asarray(simulation.diagnostics["hidden_mean_angle"]).ravel(),
-            "response_mean_angle": np.asarray(simulation.diagnostics["response_mean_angle"]).ravel(),
+            "truth_mean_angle": np.asarray(diagnostics.truth_mean_angle).ravel(),
+            "hidden_mean_angle": np.asarray(diagnostics.hidden_mean_angle).ravel(),
+            "response_mean_angle": np.asarray(diagnostics.response_mean_angle).ravel(),
             "response_log_prob": np.asarray(response_log_prob).ravel(),
             "mean_pair_score": mean_pair_score.ravel(),
         }
@@ -99,7 +103,10 @@ def plot_posterior_histograms(frame: pd.DataFrame, true_values: Mapping[str, flo
 
 def plot_response_series(frame: pd.DataFrame) -> tuple[Figure, Axes]:
     fig, ax = plt.subplots(figsize=(8.0, 3.2))
-    summary = frame.groupby("trial", as_index=False)["response"].mean()
+    summary = cast(
+        pd.DataFrame,
+        frame.groupby("trial", as_index=False)[["response"]].mean(),
+    )
     ax.plot(summary["trial"], summary["response"])
     ax.set(xlabel="trial", ylabel="mean response angle", title="Simulated responses")
     ax.spines[["top", "right"]].set_visible(False)

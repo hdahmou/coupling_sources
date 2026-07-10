@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from typing import Any
 
 import numpyro.infer.mcmc as numpyro_mcmc
 import numpyro.util as numpyro_util
 
 
 class _LabeledTqdm:
-    def __init__(self, bar: object, label: str):
+    def __init__(self, bar: Any, label: str):
         self.bar = bar
         self.label = label
 
-    def set_description(self, description: object, *args: object, **kwargs: object) -> object:
+    def set_description(
+        self,
+        description: object,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         text = str(description).strip()
         labeled = f"[{self.label}] {text}" if text else f"[{self.label}]"
         return self.bar.set_description(labeled, *args, **kwargs)
 
-    def __getattr__(self, name: str) -> object:
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.bar, name)
 
 
@@ -32,12 +38,12 @@ def labeled_progress_bar(label: str | None):
         text = str(description).strip()
         return f"[{label}] {text}" if text else f"[{label}]"
 
-    def fori_collect_with_label(*args: object, **kwargs: object) -> object:
+    def fori_collect_with_label(*args: Any, **kwargs: Any) -> Any:
         original_desc = kwargs.get("progbar_desc", lambda _: "")
         kwargs["progbar_desc"] = lambda index: with_label(original_desc(index))
         return original_fori_collect(*args, **kwargs)
 
-    def tqdm_auto_with_label(*args: object, **kwargs: object) -> _LabeledTqdm:
+    def tqdm_auto_with_label(*args: Any, **kwargs: Any) -> _LabeledTqdm:
         return _LabeledTqdm(original_tqdm_auto(*args, **kwargs), label)
 
     numpyro_mcmc.fori_collect = fori_collect_with_label
