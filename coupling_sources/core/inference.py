@@ -8,6 +8,7 @@ import numpyro
 
 from coupling_sources.core.data import (
     MCMCSpecs,
+    SimulationBatch,
     StimulusBatch,
     prepare_simulation_for_fit,
     prepare_stimuli_for_fit,
@@ -29,14 +30,43 @@ def run_inference(
     progress_label: str | None = None,
 ) -> dict[str, object]:
     """Run the full pipeline: stimuli -> simulator -> NumPyro MCMC."""
+    simulation = simulate_for_inference(
+        stimuli=stimuli,
+        simulation_parameters=simulation_parameters,
+        simulation_seed=simulation_seed,
+    )
+    fit_result = fit_simulation(
+        simulation=simulation,
+        mcmc=mcmc,
+        progress_bar=progress_bar,
+        progress_label=progress_label,
+    )
+    return {"simulation": simulation, **fit_result}
+
+
+def simulate_for_inference(
+    *,
+    stimuli: StimulusBatch,
+    simulation_parameters: Mapping[str, Any],
+    simulation_seed: int,
+) -> SimulationBatch:
     numpyro.enable_x64(True)
     stimuli_for_fit = prepare_stimuli_for_fit(stimuli)
-
-    simulation = simulate_coupling(
+    return simulate_coupling(
         seed=simulation_seed,
         batch=stimuli_for_fit,
         parameters=simulation_parameters,
     )
+
+
+def fit_simulation(
+    *,
+    simulation: SimulationBatch,
+    mcmc: MCMCSpecs,
+    progress_bar: bool,
+    progress_label: str | None = None,
+) -> dict[str, object]:
+    numpyro.enable_x64(True)
     fit_batch = prepare_simulation_for_fit(simulation)
 
     kernel = numpyro.infer.NUTS(
@@ -66,7 +96,6 @@ def run_inference(
     chain_samples = mcmc_runner.get_samples(group_by_chain=True)
     parameter_names = CouplingPriors.parameter_sites()
     return {
-        "simulation": simulation,
         "chain_method": mcmc.chain_method,
         "diagnostics": mcmc_diagnostics(mcmc_runner),
         "samples": {

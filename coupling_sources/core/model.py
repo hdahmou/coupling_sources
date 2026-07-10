@@ -137,7 +137,6 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
         pair_scores = jnp.zeros((n_participants, n_rounds, n_sources, n_sources))
 
         for trial_index in range(n_trials):
-            t = f"t{trial_index + 1}"
             reports_raw = stimuli.visible_reports[:, :, trial_index, :]
             hidden_source = stimuli.hidden_source[:, :, trial_index]
             valid_trial = stimuli.valid_trials[:, :, trial_index]
@@ -154,33 +153,40 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
 
             # Observe: relative agreement a of the visible pairs.
             a = numpyro.deterministic(
-                f"~a_{t}", _relative_agreement(reports, visible_pairs)
+                f"~$a_{{t={trial_index}}}$", _relative_agreement(reports, visible_pairs)
             )
 
             # Update: c <- c + learningRate (a - c) on visible pairs of valid trials;
             # all other pairs are carried forward unchanged.
             update_pairs = visible_pairs & valid_trial[..., None, None]
             pair_scores = numpyro.deterministic(
-                f"~c_{t}", pair_scores + update_pairs * learningRate * (a - pair_scores)
+                f"~$c_{{t={trial_index}}}$",
+                pair_scores + update_pairs * learningRate * (a - pair_scores),
             )
 
             # Respond, truth-estimation branch: redundancy discounting.
             η_y = numpyro.deterministic(
-                f"~η^y_{t}", _truth_scores(pair_scores, visible_sources, off_diagonal)
+                f"~$η^y_{{t={trial_index}}}$",
+                _truth_scores(pair_scores, visible_sources, off_diagonal),
             )
             w = numpyro.deterministic(
-                f"~w_{t}", _visible_softmax(η_y, g_y, visible_sources)
+                f"~$w_{{t={trial_index}}}$", _visible_softmax(η_y, g_y, visible_sources)
             )
-            μ = numpyro.deterministic(f"~μ_{t}", circular_mean(reports, w))
+            μ = numpyro.deterministic(
+                f"~$μ_{{t={trial_index}}}$", circular_mean(reports, w)
+            )
 
             # Respond, hidden-source branch: relatedness boosting.
             η_z = numpyro.deterministic(
-                f"~η^z_{t}", _probe_scores(pair_scores, hidden_source, visible_sources)
+                f"~$η^z_{{t={trial_index}}}$",
+                _probe_scores(pair_scores, hidden_source, visible_sources),
             )
             v = numpyro.deterministic(
-                f"~v_{t}", _visible_softmax(η_z, g_z, visible_sources)
+                f"~$v_{{t={trial_index}}}$", _visible_softmax(η_z, g_z, visible_sources)
             )
-            ν = numpyro.deterministic(f"~ν_{t}", circular_mean(reports, v))
+            ν = numpyro.deterministic(
+                f"~$ν_{{t={trial_index}}}$", circular_mean(reports, v)
+            )
 
             # Likelihood: each valid trial contributes to exactly one branch.
             y_mask = valid_trial & ~is_probe
@@ -196,6 +202,14 @@ def model_coupling(batch: StimulusBatch | SimulationBatch) -> None:
                 else jnp.where(z_mask, hidden_predictions[:, :, trial_index], 0.0)
             )
             with numpyro.handlers.mask(mask=y_mask):
-                numpyro.sample(f"y_{t}", dist.VonMises(μ, vmConcentration), obs=y_obs)
+                numpyro.sample(
+                    f"$y_{{t={trial_index}}}$",
+                    dist.VonMises(μ, vmConcentration),
+                    obs=y_obs,
+                )
             with numpyro.handlers.mask(mask=z_mask):
-                numpyro.sample(f"z_{t}", dist.VonMises(ν, vmConcentration), obs=z_obs)
+                numpyro.sample(
+                    f"$z_{{t={trial_index}}}$",
+                    dist.VonMises(ν, vmConcentration),
+                    obs=z_obs,
+                )
