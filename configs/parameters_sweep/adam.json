@@ -19,16 +19,16 @@
       "mode": "product",
       "axes": {
         "n_participants": [
-          10, 40
+          30
         ],
         "n_trials_full": [
-          20
+          20, 40
         ],
         "n_trials_partial": [
-          20
+          20, 40
         ],
         "sigma": [
-          0.55
+          0.5
         ],
         "lam": [
           0.8
@@ -41,7 +41,7 @@
   },
   "prior": {
     "seed": 202,
-    "parameter_draws": 48
+    "parameter_draws": 64
   },
   "mcmc": {
     "seed": 103,

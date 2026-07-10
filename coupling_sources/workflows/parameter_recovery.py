@@ -7,6 +7,7 @@ import shutil
 import sys
 import traceback
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +18,6 @@ from coupling_sources.compute.backend import (
 )
 from coupling_sources.core.data import MCMCSpecs
 from coupling_sources.core.priors import CouplingPriors
-from coupling_sources.core.stimuli import generate_stimulus
 from coupling_sources.utils.artifacts import Artifacts
 from coupling_sources.workflows.job_grid import GridRun, build_run_grid, write_job_grid
 
@@ -70,11 +70,15 @@ def _prepare_job(
     job_dir = run_dir / "jobs" / run.run_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    stimuli = generate_stimulus(run.stimuli)
-    Artifacts.write_config(job_dir / "stimuli.npz", stimuli.to_config())
-    (job_dir / "simulation_parameters.json").write_text(
+    (job_dir / "job.json").write_text(
         json.dumps(
-            {"seed": simulation_seed, "parameters": run.simulation},
+            {
+                "stimulus": asdict(run.stimuli),
+                "simulation": {
+                    "seed": simulation_seed,
+                    "parameters": run.simulation,
+                },
+            },
             indent=2,
         )
         + "\n"

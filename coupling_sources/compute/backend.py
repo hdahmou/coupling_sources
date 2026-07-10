@@ -19,6 +19,7 @@ from coupling_sources.core.data import MCMCSpecs
 
 LOCAL_HOSTS = {"local", "localhost", "127.0.0.1", "::1"}
 DEFAULT_REMOTE_PYTHON = ".venv/bin/python"
+DEFAULT_JAX_COMPILATION_CACHE_DIR = ".jax_cache"
 
 
 @dataclass(frozen=True)
@@ -133,19 +134,16 @@ class HostResult:
     failed_jobs: tuple[str, ...]
 
     @classmethod
-    def from_status_files(
+    def from_jobs(
         cls,
         *,
-        run_dir: Path,
         host: str,
         jobs: Sequence[PosteriorJob],
         exit_code: int,
     ) -> "HostResult":
         failed: list[str] = []
         for job in jobs:
-            status_path = (
-                run_dir / "job_status" / f"{_safe_path_part(job.job_id)}.json"
-            )
+            status_path = job.job_dir / "status.json"
             if not status_path.exists():
                 failed.append(job.job_id)
                 continue
@@ -285,6 +283,8 @@ def _machine_env(
         if values is not None:
             env.update({str(key): str(value) for key, value in values.items()})
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("JAX_ENABLE_COMPILATION_CACHE", "true")
+    env.setdefault("JAX_COMPILATION_CACHE_DIR", DEFAULT_JAX_COMPILATION_CACHE_DIR)
     if parallel_chains_per_fit is not None:
         env["XLA_FLAGS"] = _xla_flags_with_host_device_count(
             env.get("XLA_FLAGS"),
@@ -342,12 +342,10 @@ class _PosteriorJobRunner:
             ):
                 archive.add(path, arcname=path.relative_to(self.run_dir))
             for job in jobs:
-                stimuli_path = job.job_dir / "stimuli.npz"
-                simulation_parameters_path = job.job_dir / "simulation_parameters.json"
-                archive.add(stimuli_path, arcname=stimuli_path.relative_to(self.run_dir))
+                job_config_path = job.job_dir / "job.json"
                 archive.add(
-                    simulation_parameters_path,
-                    arcname=simulation_parameters_path.relative_to(self.run_dir),
+                    job_config_path,
+                    arcname=job_config_path.relative_to(self.run_dir),
                 )
         return archive_path
 
@@ -440,8 +438,7 @@ class _PosteriorJobRunner:
                 ) from exc
 
         safe_extract_tar(local_result_archive, self.run_dir)
-        return HostResult.from_status_files(
-            run_dir=self.run_dir,
+        return HostResult.from_jobs(
             host=machine.host,
             jobs=jobs,
             exit_code=result.exited,
@@ -472,8 +469,7 @@ class _PosteriorJobRunner:
             os.environ.clear()
             os.environ.update(previous_env)
 
-        return HostResult.from_status_files(
-            run_dir=self.run_dir,
+        return HostResult.from_jobs(
             host=machine.host,
             jobs=jobs,
             exit_code=exit_code,

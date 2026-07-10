@@ -25,16 +25,18 @@ Change the SSH target and destination path to match the host's `project_path`. T
   --compute-config configs/compute/ssh_machines.json
 ```
 
-If the compute config contains active remote machines, the runner asks once for the shared SSH password. Jobs are independent: the local machine prepares the artifact run, sends assigned job inputs to each remote host over SSH, runs local process pools on those hosts, and fetches result archives when each host finishes.
+If the compute config contains active remote machines, the runner asks once for the shared SSH password. Jobs are independent: the local machine prepares JSON job specifications, sends assigned inputs to each remote host over SSH, runs local process pools on those hosts, and fetches result archives when each host finishes.
 
 Set `mcmc.parallel_chains_per_fit` in the run config to the number of MCMC chains that can run in parallel inside one fit. The runner applies it to worker environments as `XLA_FLAGS=--xla_force_host_platform_device_count=<N>`, which NumPyro/JAX needs when `chain_method` is `parallel`. This is separate from `max_concurrent_fits`, which controls how many independent fits run at the same time on a host.
+
+Workers use a persistent JAX compilation cache at `.jax_cache` in each project clone. Identical model and input shapes can reuse compiled executables across worker processes and later runs on the same host. Set `JAX_COMPILATION_CACHE_DIR` in the global or per-machine `env` configuration to override the location.
+
+Each fit runs in a fresh spawned process. The process generates and saves `stimuli.npz`, simulates and saves `simulation.npz`, runs the posterior fit, saves `posterior.npz`, and then exits. Exiting after one job releases all JAX and LLVM mappings before another job starts while `max_concurrent_fits` still limits the number of active fits.
 
 Artifacts are written under `artifacts/<config_name>_<YYYY_MM_DD_HH_MM_SS>/`:
 
 - `config.json`, `logs.log`, `prior.npz`, and `job_grid.csv`
-- `jobs/job_000000/stimuli.npz`, `simulation_parameters.json`, `simulation.npz`, and `posterior.npz`
-- `worker_logs/<host>/<job_id>.log`
-- `job_status/<job_id>.json`
+- `jobs/job_000000/job.json`, `stimuli.npz`, `simulation.npz`, `posterior.npz`, `status.json`, and `job.log`
 - temporary transfer archives under `transfer/`
 
 No Dask scheduler, dashboard, worker ports, nanny ports, or SSH tunnel script are used.

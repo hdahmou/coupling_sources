@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import signal
 import sys
 import tarfile
@@ -18,10 +16,12 @@ from threading import Event, current_thread, main_thread
 from typing import Any
 
 import numpy as np
+import numpyro
 
 from coupling_sources.compute.archives import safe_extract_tar
-from coupling_sources.core.data import MCMCSpecs, StimulusBatch
-from coupling_sources.core.inference import run_inference
+from coupling_sources.core.data import MCMCSpecs, StimulusSpec
+from coupling_sources.core.inference import fit_simulation, simulate_for_inference
+from coupling_sources.core.stimuli import generate_stimulus
 from coupling_sources.utils.artifacts import Artifacts
 
 POLL_SECONDS = 0.5
@@ -50,7 +50,7 @@ def run_assigned_jobs(
 
     assignment = json.loads(assigned_jobs_path.read_text())
     jobs = list(assignment["jobs"])
-    worker_label = _safe_path_part(assignment.get("worker_label", "local"))
+    worker_label = str(assignment.get("worker_label", "local"))
     mcmc = MCMCSpecs(**assignment["mcmc"])
     progress_bar = bool(assignment.get("progress_bar", False))
 
@@ -59,12 +59,11 @@ def run_assigned_jobs(
         flush=True,
     )
     failed = 0
-    status_dir = run_dir / "job_status"
-    status_dir.mkdir(parents=True, exist_ok=True)
 
     executor = ProcessPoolExecutor(
         max_workers=max_parallel,
         mp_context=get_context("spawn"),
+        max_tasks_per_child=1,
     )
     futures = {}
     try:
@@ -75,7 +74,6 @@ def run_assigned_jobs(
                 job_id,
                 mcmc,
                 progress_bar,
-                worker_label,
             ): job_id
             for job_id in jobs
         }
@@ -96,12 +94,12 @@ def run_assigned_jobs(
                     status = future.result()
                 except Exception:
                     status = {
-                        "job_id": job_id,
                         "ok": False,
                         "error": traceback.format_exc(),
                         "finished_at": datetime.now().isoformat(timespec="seconds"),
                     }
-                _write_status(status_dir, status)
+                status_path = run_dir / "jobs" / job_id / "status.json"
+                status_path.write_text(json.dumps(status, indent=2) + "\n")
                 if not status.get("ok", False):
                     failed += 1
                 print(
@@ -123,7 +121,7 @@ def run_assigned_jobs(
         executor.shutdown(wait=True, cancel_futures=True)
 
     if result_archive_path is not None:
-        _write_result_archive(run_dir, jobs, worker_label, result_archive_path)
+        _write_result_archive(run_dir, jobs, result_archive_path)
     print(f"worker done: {worker_label}: failed={failed}", flush=True)
     return 1 if failed else 0
 
@@ -133,91 +131,90 @@ def _run_one_job(
     job_id: str,
     mcmc: MCMCSpecs,
     progress_bar: bool,
-    worker_label: str,
 ) -> dict[str, Any]:
-    run_path = Path(run_dir)
-    job_dir = run_path / "jobs" / job_id
-    log_path = run_path / "worker_logs" / worker_label / f"{_safe_path_part(job_id)}.log"
+    job_dir = Path(run_dir) / "jobs" / job_id
+    log_path = job_dir / "job.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     started_at = datetime.now().isoformat(timespec="seconds")
     with log_path.open("a", buffering=1) as log_file:
         with redirect_stdout(log_file), redirect_stderr(log_file):
             print(f"fit start: {job_id}", flush=True)
             try:
-                simulation_config = json.loads((job_dir / "simulation_parameters.json").read_text())
-                result = run_inference(
-                    stimuli=StimulusBatch.from_config(
-                        Artifacts.read_config(job_dir / "stimuli.npz")
-                    ),
+                numpyro.enable_x64(True)
+                job_config = json.loads((job_dir / "job.json").read_text())
+                stimulus_config = job_config["stimulus"]
+                stimulus_config["coupled_sources"] = tuple(
+                    stimulus_config["coupled_sources"]
+                )
+                stimuli = generate_stimulus(StimulusSpec(**stimulus_config))
+                Artifacts.write_config(job_dir / "stimuli.npz", stimuli.to_config())
+
+                simulation_config = job_config["simulation"]
+                simulation = simulate_for_inference(
+                    stimuli=stimuli,
                     simulation_parameters=simulation_config["parameters"],
                     simulation_seed=int(simulation_config["seed"]),
+                )
+                Artifacts.write_config(
+                    job_dir / "simulation.npz",
+                    simulation.to_config(),
+                    float_dtype=np.float16,
+                )
+
+                fit_result = fit_simulation(
+                    simulation=simulation,
                     mcmc=mcmc,
                     progress_bar=progress_bar,
                     progress_label=job_id,
                 )
-                Artifacts.write_config(
-                    job_dir / "simulation.npz",
-                    result["simulation"].to_config(),
-                    float_dtype=np.float16,
+                Artifacts.write_dist_samples(
+                    job_dir / "posterior.npz",
+                    fit_result["samples"],
                 )
-                Artifacts.write_dist_samples(job_dir / "posterior.npz", result["samples"])
                 Artifacts.write_mcmc_diagnostics(
                     job_dir / "posterior.npz",
-                    result["diagnostics"],
+                    fit_result["diagnostics"],
                 )
                 print(f"fit done: {job_id}", flush=True)
                 return {
-                    "job_id": job_id,
                     "ok": True,
                     "started_at": started_at,
                     "finished_at": datetime.now().isoformat(timespec="seconds"),
-                    "posterior_path": str(Path("jobs") / job_id / "posterior.npz"),
-                    "log_path": str(log_path.relative_to(run_path)),
-                    "chain_method": result["chain_method"],
+                    "chain_method": fit_result["chain_method"],
                 }
             except Exception:
                 error = traceback.format_exc()
                 print(error, file=sys.stderr, flush=True)
                 return {
-                    "job_id": job_id,
                     "ok": False,
                     "started_at": started_at,
                     "finished_at": datetime.now().isoformat(timespec="seconds"),
-                    "log_path": str(log_path.relative_to(run_path)),
                     "error": error,
                 }
-
-
-def _write_status(status_dir: Path, status: dict[str, Any]) -> None:
-    job_id = _safe_path_part(status["job_id"])
-    (status_dir / f"{job_id}.json").write_text(json.dumps(status, indent=2) + "\n")
 
 
 def _write_result_archive(
     run_dir: Path,
     job_ids: Sequence[str],
-    worker_label: str,
     result_archive_path: Path,
 ) -> None:
     result_archive_path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(result_archive_path, "w:gz") as archive:
         for job_id in job_ids:
-            posterior_path = run_dir / "jobs" / job_id / "posterior.npz"
-            status_path = run_dir / "job_status" / f"{_safe_path_part(job_id)}.json"
-            log_path = run_dir / "worker_logs" / worker_label / f"{_safe_path_part(job_id)}.log"
-            _add_if_exists(archive, posterior_path, run_dir)
-            _add_if_exists(archive, status_path, run_dir)
-            _add_if_exists(archive, log_path, run_dir)
+            job_dir = run_dir / "jobs" / job_id
+            for artifact_name in (
+                "stimuli.npz",
+                "simulation.npz",
+                "posterior.npz",
+                "status.json",
+                "job.log",
+            ):
+                _add_if_exists(archive, job_dir / artifact_name, run_dir)
 
 
 def _add_if_exists(archive: tarfile.TarFile, path: Path, base: Path) -> None:
     if path.exists():
         archive.add(path, arcname=path.relative_to(base))
-
-
-def _safe_path_part(value: object) -> str:
-    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._-")
-    return name or "job"
 
 
 def _raise_keyboard_interrupt(signum: int, frame: object) -> None:
