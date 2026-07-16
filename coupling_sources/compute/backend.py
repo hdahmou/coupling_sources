@@ -118,7 +118,9 @@ class ComputeConfig:
         if len(machines) != len(raw_machines):
             raise ValueError("compute config machines must be objects")
         if sum(machine.is_local for machine in machines) > 1:
-            raise ValueError("compute config can include at most one local machine entry")
+            raise ValueError(
+                "compute config can include at most one local machine entry"
+            )
         if not any(machine.active for machine in machines):
             raise ValueError("compute config must include at least one active machine")
 
@@ -138,7 +140,9 @@ class ComputeConfig:
 
     @property
     def active_remote_machines(self) -> tuple[Machine, ...]:
-        return tuple(machine for machine in self.active_machines if not machine.is_local)
+        return tuple(
+            machine for machine in self.active_machines if not machine.is_local
+        )
 
 
 @dataclass(frozen=True)
@@ -240,7 +244,9 @@ def run_posterior_jobs(
 
     failed = [job_id for result in results for job_id in result.failed_jobs]
     if failed:
-        raise RuntimeError(f"posterior fits failed for {len(failed)} job(s): {failed[:10]}")
+        raise RuntimeError(
+            f"posterior fits failed for {len(failed)} job(s): {failed[:10]}"
+        )
 
 
 def _safe_path_part(value: object) -> str:
@@ -334,7 +340,9 @@ class _PosteriorJobRunner:
     ) -> Path:
         transfer_dir = self.run_dir / "transfer"
         transfer_dir.mkdir(parents=True, exist_ok=True)
-        assignment_path = transfer_dir / f"assigned_jobs_{_safe_path_part(machine.host)}.json"
+        assignment_path = (
+            transfer_dir / f"assigned_jobs_{_safe_path_part(machine.host)}.json"
+        )
         assigned_jobs = {
             "worker_label": _safe_path_part(machine.host),
             "jobs": [job.job_id for job in jobs],
@@ -407,8 +415,7 @@ class _PosteriorJobRunner:
         project_path = machine.remote_project_path()
         env = _machine_env(machine, self.config, self.parallel_chains_per_fit)
         env_prefix = (
-            " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
-            + " "
+            " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items()) + " "
             if env
             else ""
         )

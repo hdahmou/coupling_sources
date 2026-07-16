@@ -10,7 +10,6 @@ from coupling_sources.core.gain_calibration import GainCalibration
 from coupling_sources.workflows import job_grid
 from coupling_sources.workflows.parameter_recovery import _parallel_chains_per_fit
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 

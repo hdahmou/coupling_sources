@@ -61,9 +61,7 @@ def gain_calibration_key(spec: StimulusSpec) -> tuple[object, ...]:
 
 def gain_calibration_design(spec: StimulusSpec) -> dict[str, object]:
     """Return the serialized stimulus fields that determine calibrated gains."""
-    design = {
-        name: getattr(spec, name) for name in GAIN_CALIBRATION_DESIGN_FIELDS
-    }
+    design = {name: getattr(spec, name) for name in GAIN_CALIBRATION_DESIGN_FIELDS}
     design["coupled_sources"] = list(spec.coupled_sources)
     return design
 
@@ -141,21 +139,16 @@ def _mean_signal_by_role(
     safe_reports = np.nan_to_num(reports, nan=0.0)
     off_diagonal = ~np.eye(reports.shape[-1], dtype=bool)
     visible_pairs = (
-        visible_sources[..., :, None]
-        & visible_sources[..., None, :]
-        & off_diagonal
+        visible_sources[..., :, None] & visible_sources[..., None, :] & off_diagonal
     )
-    pair_agreement = np.cos(
-        safe_reports[..., :, None] - safe_reports[..., None, :]
-    )
+    pair_agreement = np.cos(safe_reports[..., :, None] - safe_reports[..., None, :])
     pair_count = np.maximum(
         visible_pairs.sum(axis=(-2, -1), keepdims=True),
         1,
     )
-    mean_agreement = (
-        (pair_agreement * visible_pairs).sum(axis=(-2, -1), keepdims=True)
-        / pair_count
-    )
+    mean_agreement = (pair_agreement * visible_pairs).sum(
+        axis=(-2, -1), keepdims=True
+    ) / pair_count
     relative_agreement = 0.5 * (pair_agreement - mean_agreement) * visible_pairs
 
     coupled = tuple(coupled_sources)

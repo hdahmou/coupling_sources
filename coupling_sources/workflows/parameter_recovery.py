@@ -51,7 +51,6 @@ def _append_run_log(log_path: Path):
             os.close(stderr_fd)
 
 
-
 def _job_name_from_config(config_path: Path, started_at: datetime) -> str:
     resolved = config_path.resolve()
     try:

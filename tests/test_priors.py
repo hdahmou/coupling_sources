@@ -72,13 +72,13 @@ def test_model_uses_prior_parameter_site_names() -> None:
     trace = numpyro.handlers.trace(
         numpyro.handlers.seed(model_coupling, rng_seed=0)
     ).get_trace(simulation, 0.25, gains)
-    sample_sites = {
-        name for name, site in trace.items() if site["type"] == "sample"
-    }
+    sample_sites = {name for name, site in trace.items() if site["type"] == "sample"}
 
     parameter_sites = set(CouplingPriors.parameter_sites())
     assert parameter_sites <= sample_sites
-    assert {name for name in sample_sites if name in CouplingPriors.distributions()} == parameter_sites
+    assert {
+        name for name in sample_sites if name in CouplingPriors.distributions()
+    } == parameter_sites
     np.testing.assert_allclose(
         trace["~$g_y$"]["value"],
         trace["gamma_y"]["value"] * gains.g_star_y,

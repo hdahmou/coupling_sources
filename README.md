@@ -4,7 +4,15 @@
 
 ```bash
 uv sync
+uv run pre-commit install
 source .venv/bin/activate
+```
+
+The pre-commit hook must be installed once per clone. To run Black manually
+across all tracked Python files:
+
+```bash
+uv run pre-commit run --all-files
 ```
 
 Each machine used for SSH execution must already have a clone of this repository and a working Python environment at the configured `python` path.
@@ -18,6 +26,55 @@ Change the SSH target and destination path to match the host's `project_path`. T
 
 
 ## Run Parameter Recovery
+
+Simulation parameters are `gamma_y` and `gamma_z`: `0` means no use, `1` means
+ideal-observer use, and negative values reverse the effect. A useful recovery
+grid is `{0, 0.5, 1}`. Gain calibration uses both resultant screens and the exact
+truth/probe mixture.
+
+For a locked design or an existing dataset, generate fixed constants directly
+from its parameters:
+
+```bash
+.venv/bin/python scripts/compute_gain_constants.py \
+  --sigma 0.55 \
+  --lam 0.8 \
+  --resultant-floor-full 0.6 \
+  --resultant-floor-leave-one-out 0.6 \
+  --n-trials-full 28 \
+  --n-trials-partial 12 \
+  --n-monte-carlo-replicates 2000 \
+  --max-relative-mc-se 0.01
+```
+
+The command prints a `gain_constants` block plus the complete
+`gain_calibration` provenance record. It always reports relative Monte Carlo
+SEs and approximate 95% Monte Carlo intervals. The optional
+`--max-relative-mc-se 0.01` requires both gains to have at most 1% relative
+Monte Carlo SE and returns a nonzero status otherwise. A fixed run config
+includes both output blocks; `gain_calibration.mode` is `fixed`, and recovery
+verifies that the rounded constants match the recorded estimates. The mode and
+calibration provenance are required; recovery no longer accepts untraceable
+fixed constants or an implicit calibration mode.
+The recorded fixed calibration design must also match every stimulus design in
+the run; use automatic mode for a grid that varies any calibration field.
+
+For a recovery grid whose stimulus designs require different benchmark units,
+omit `gain_constants` and request coordinator-side calibration:
+
+```json
+"gain_calibration": {
+  "mode": "auto",
+  "seed": 20260711,
+  "n_monte_carlo_replicates": 2000
+}
+```
+
+Each unique combination of trial counts, noise, coupling, coupled sources, and
+resultant floors is calibrated once before jobs are dispatched. All parameter
+draws for that design reuse the result. The resolved constants appear in each
+`job.json`, in `job_grid.csv`, and with their Monte Carlo provenance in
+`gain_calibrations.json`.
 
 ```bash
 .venv/bin/python scripts/run_parameter_recovery.py \

@@ -69,7 +69,9 @@ def test_generate_stimulus_balances_hidden_source_counts() -> None:
     assert np.all(trial_type[hidden_source >= 0] == HIDDEN_SOURCE_PROBE)
     assert np.all(trial_type[hidden_source < 0] == TRUTH_ESTIMATION)
 
-    for participant_hidden_sources in hidden_source.reshape((-1, hidden_source.shape[-1])):
+    for participant_hidden_sources in hidden_source.reshape(
+        (-1, hidden_source.shape[-1])
+    ):
         counts = np.bincount(
             participant_hidden_sources[participant_hidden_sources >= 0],
             minlength=spec.n_sources,

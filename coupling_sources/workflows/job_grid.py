@@ -42,7 +42,9 @@ def _expand_product_config(block: dict[str, Any]) -> list[dict[str, Any]]:
     if grid["mode"] != "product":
         raise ValueError("grid.mode must be 'product'")
 
-    base = {key: value for key, value in block.items() if key not in {"defaults", "grid"}}
+    base = {
+        key: value for key, value in block.items() if key not in {"defaults", "grid"}
+    }
     base.update(block.get("defaults", {}))
     axes = grid["axes"]
     names = tuple(axes)
@@ -88,18 +90,13 @@ def _gain_calibration_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
 def _monte_carlo_settings(calibration: Mapping[str, Any]) -> tuple[int, int]:
     try:
         seed = int(calibration["seed"])
-        n_monte_carlo_replicates = int(
-            calibration["n_monte_carlo_replicates"]
-        )
+        n_monte_carlo_replicates = int(calibration["n_monte_carlo_replicates"])
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError(
-            "gain_calibration requires integer seed and "
-            "n_monte_carlo_replicates"
+            "gain_calibration requires integer seed and " "n_monte_carlo_replicates"
         ) from error
     if n_monte_carlo_replicates < 2:
-        raise ValueError(
-            "gain_calibration.n_monte_carlo_replicates must be at least 2"
-        )
+        raise ValueError("gain_calibration.n_monte_carlo_replicates must be at least 2")
     return seed, n_monte_carlo_replicates
 
 
@@ -176,7 +173,9 @@ def build_run_grid(config: dict[str, Any]) -> list[GridRun]:
     if "participant_parameters" in simulation_config:
         parameters = [
             CouplingPriors.parameters_as_floats({**values, "c0": c0})
-            for values in _expand_product_config(simulation_config["participant_parameters"])
+            for values in _expand_product_config(
+                simulation_config["participant_parameters"]
+            )
         ]
     else:
         prior = config["prior"]

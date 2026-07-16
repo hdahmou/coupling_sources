@@ -79,7 +79,9 @@ class Artifacts:
         path = Path(path)
         cls._validate_path(path)
         if path.exists() and path.is_dir():
-            raise ValueError(f"artifact path is a directory, expected .npz file: {path}")
+            raise ValueError(
+                f"artifact path is a directory, expected .npz file: {path}"
+            )
 
         path.parent.mkdir(parents=True, exist_ok=True)
         arrays = cls._flatten_tree(tree, float_dtype=float_dtype)

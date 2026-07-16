@@ -118,7 +118,6 @@ def fit_simulation(
         "chain_method": mcmc.chain_method,
         "diagnostics": mcmc_diagnostics(mcmc_runner),
         "samples": {
-            name: jax.device_get(chain_samples[name])
-            for name in parameter_names
+            name: jax.device_get(chain_samples[name]) for name in parameter_names
         },
     }

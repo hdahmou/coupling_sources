@@ -143,4 +143,6 @@ def test_stimulus_and_simulation_artifacts_round_trip(tmp_path):
 
 def test_artifact_paths_must_be_npz(tmp_path):
     with pytest.raises(ValueError, match="must end with .npz"):
-        Artifacts.write_dist_samples(tmp_path / "prior", {"learningRate": np.array([0.1])})
+        Artifacts.write_dist_samples(
+            tmp_path / "prior", {"learningRate": np.array([0.1])}
+        )

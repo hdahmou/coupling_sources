@@ -25,7 +25,12 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["coupling_sources*"]
 
+[tool.black]
+target-version = ["py314"]
+
 [dependency-groups]
 dev = [
+    "black[jupyter]>=26.5.1",
+    "pre-commit>=4.6.0",
     "pytest>=9.1.1",
 ]

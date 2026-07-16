@@ -20,7 +20,9 @@ def test_mean_angle_difference_matches_manual_circular_means() -> None:
     expected = np.abs(np.angle(np.exp(1j * (equal_mean - weighted_mean))))
 
     np.testing.assert_allclose(
-        np.asarray(mean_angle_difference(jnp.asarray(source_choices), jnp.asarray(weights))),
+        np.asarray(
+            mean_angle_difference(jnp.asarray(source_choices), jnp.asarray(weights))
+        ),
         expected,
         rtol=1e-6,
     )

@@ -14,6 +14,4 @@ def safe_extract_tar(archive_path: Path, output_dir: Path) -> None:
                 tarfile.data_filter(member, str(output_root))
             archive.extractall(output_root, members=members, filter="data")
         except tarfile.FilterError as exc:
-            raise ValueError(
-                f"unsafe archive member path: {exc.tarinfo.name}"
-            ) from exc
+            raise ValueError(f"unsafe archive member path: {exc.tarinfo.name}") from exc

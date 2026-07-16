@@ -73,41 +73,66 @@ def simulate_coupling(
             & off_diagonal_bool
         )
         pair_agreement = jnp.cos(reports[..., :, None] - reports[..., None, :])
-        visible_pair_values = pair_agreement * visible_pairs.astype(pair_agreement.dtype)
-        pair_count = jnp.maximum(jnp.sum(visible_pairs, axis=(-2, -1), keepdims=True), 1)
-        mean_visible_agreement = jnp.sum(visible_pair_values, axis=(-2, -1), keepdims=True) / pair_count
-        relative_agreement = 0.5 * (pair_agreement - mean_visible_agreement) * visible_pairs.astype(pair_agreement.dtype)
+        visible_pair_values = pair_agreement * visible_pairs.astype(
+            pair_agreement.dtype
+        )
+        pair_count = jnp.maximum(
+            jnp.sum(visible_pairs, axis=(-2, -1), keepdims=True), 1
+        )
+        mean_visible_agreement = (
+            jnp.sum(visible_pair_values, axis=(-2, -1), keepdims=True) / pair_count
+        )
+        relative_agreement = (
+            0.5
+            * (pair_agreement - mean_visible_agreement)
+            * visible_pairs.astype(pair_agreement.dtype)
+        )
 
         pre_update_pair_scores = pair_scores
         valid_trial = valid_trials[:, :, trial_index]
-        update_pairs = (visible_pairs & valid_trial[..., None, None]).astype(pair_scores.dtype)
-        pair_scores = pair_scores + update_pairs * params["learningRate"] * (relative_agreement - pair_scores)
+        update_pairs = (visible_pairs & valid_trial[..., None, None]).astype(
+            pair_scores.dtype
+        )
+        pair_scores = pair_scores + update_pairs * params["learningRate"] * (
+            relative_agreement - pair_scores
+        )
 
         visible_count = jnp.maximum(jnp.sum(visible_sources, axis=-1, keepdims=True), 1)
         truth_denominator = jnp.maximum(visible_count - 1, 1)
         other_visible_sources = visible_sources[..., None, :] & off_diagonal_bool
-        truth_source_scores = -jnp.sum(
-            pair_scores * other_visible_sources.astype(pair_scores.dtype),
-            axis=-1,
-        ) / truth_denominator
-        truth_source_scores = truth_source_scores * visible_sources.astype(pair_scores.dtype)
+        truth_source_scores = (
+            -jnp.sum(
+                pair_scores * other_visible_sources.astype(pair_scores.dtype),
+                axis=-1,
+            )
+            / truth_denominator
+        )
+        truth_source_scores = truth_source_scores * visible_sources.astype(
+            pair_scores.dtype
+        )
 
         hidden = hidden_source[:, :, trial_index]
         hidden_indices = jnp.broadcast_to(
             jnp.clip(hidden, 0, n_sources - 1)[..., None, None],
             pair_scores.shape[:-1] + (1,),
         )
-        probe_source_scores = jnp.take_along_axis(pair_scores, hidden_indices, axis=-1)[..., 0]
-        probe_source_scores = probe_source_scores * visible_sources.astype(pair_scores.dtype)
+        probe_source_scores = jnp.take_along_axis(pair_scores, hidden_indices, axis=-1)[
+            ..., 0
+        ]
+        probe_source_scores = probe_source_scores * visible_sources.astype(
+            pair_scores.dtype
+        )
 
         no_visible_sources = ~jnp.any(visible_sources, axis=-1, keepdims=True)
         fallback_source = jnp.arange(n_sources) == 0
-        safe_visible_sources = visible_sources | (
-            no_visible_sources & fallback_source
-        )
+        safe_visible_sources = visible_sources | (no_visible_sources & fallback_source)
         log_visible_sources = jnp.log(safe_visible_sources)
-        truth_weights = jax.nn.softmax(truth_source_scores * params["g_y"] + log_visible_sources, axis=-1)
-        probe_weights = jax.nn.softmax(probe_source_scores * params["g_z"] + log_visible_sources, axis=-1)
+        truth_weights = jax.nn.softmax(
+            truth_source_scores * params["g_y"] + log_visible_sources, axis=-1
+        )
+        probe_weights = jax.nn.softmax(
+            probe_source_scores * params["g_z"] + log_visible_sources, axis=-1
+        )
         truth_mean_angle = circular_mean(reports, truth_weights)
         hidden_mean_angle = circular_mean(reports, probe_weights)
         response_mean_angle = jnp.where(
@@ -133,13 +158,19 @@ def simulate_coupling(
             diagnostics[name] = diagnostics[name].at[:, :, trial_index, ...].set(value)
 
     key_truth, key_hidden = jax.random.split(response_key)
-    truth_draws = dist.VonMises(diagnostics["truth_mean_angle"], params["vmConcentration"]).sample(key_truth) % (2 * jnp.pi)
-    hidden_draws = dist.VonMises(diagnostics["hidden_mean_angle"], params["vmConcentration"]).sample(key_hidden) % (2 * jnp.pi)
+    truth_draws = dist.VonMises(
+        diagnostics["truth_mean_angle"], params["vmConcentration"]
+    ).sample(key_truth) % (2 * jnp.pi)
+    hidden_draws = dist.VonMises(
+        diagnostics["hidden_mean_angle"], params["vmConcentration"]
+    ).sample(key_hidden) % (2 * jnp.pi)
     is_truth = (trial_type == TRUTH_ESTIMATION) & valid_trials
     is_probe = (trial_type == HIDDEN_SOURCE_PROBE) & valid_trials
     truth_estimates = jnp.where(is_truth, truth_draws, jnp.nan)
     hidden_predictions = jnp.where(is_probe, hidden_draws, jnp.nan)
-    responses = jnp.where(valid_trials, jnp.where(is_probe, hidden_draws, truth_draws), jnp.nan)
+    responses = jnp.where(
+        valid_trials, jnp.where(is_probe, hidden_draws, truth_draws), jnp.nan
+    )
 
     return SimulationBatch(
         stimuli=StimulusBatch(

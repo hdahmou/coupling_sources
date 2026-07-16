@@ -44,14 +44,17 @@ def _parity_stimuli() -> StimulusBatch:
     for participant in range(n_participants):
         for round_index in range(n_rounds):
             offset = 0.17 * participant + 0.09 * round_index
-            complete_reports[participant, round_index] = np.array(
-                [
-                    [0.10, 0.45, 0.90, 1.30],
-                    [0.25, 0.60, 1.05, 1.55],
-                    [0.35, 0.70, 1.20, 1.75],
-                    [0.20, 0.55, 1.10, 1.65],
-                ]
-            ) + offset
+            complete_reports[participant, round_index] = (
+                np.array(
+                    [
+                        [0.10, 0.45, 0.90, 1.30],
+                        [0.25, 0.60, 1.05, 1.55],
+                        [0.35, 0.70, 1.20, 1.75],
+                        [0.20, 0.55, 1.10, 1.65],
+                    ]
+                )
+                + offset
+            )
 
     visible_reports = complete_reports.copy()
     visible_reports[:, :, 1, 1] = np.nan

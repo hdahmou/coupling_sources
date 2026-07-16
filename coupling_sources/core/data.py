@@ -301,7 +301,9 @@ class SimulationBatch:
         if np.any(~np.isfinite(truth_estimates[truth_mask])) or np.any(
             ~np.isnan(truth_estimates[~truth_mask])
         ):
-            raise ValueError("truth_estimates must be finite only on valid truth trials")
+            raise ValueError(
+                "truth_estimates must be finite only on valid truth trials"
+            )
         if np.any(~np.isfinite(hidden_predictions[probe_mask])) or np.any(
             ~np.isnan(hidden_predictions[~probe_mask])
         ):

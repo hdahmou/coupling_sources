@@ -114,7 +114,7 @@ def test_locked_gains_must_match_recorded_calibration() -> None:
             "estimates": {
                 "g_star_y": 19.94570023037356,
                 "g_star_z": 28.1212114090911,
-            }
+            },
         },
     }
 

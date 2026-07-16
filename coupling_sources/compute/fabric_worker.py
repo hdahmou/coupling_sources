@@ -28,7 +28,9 @@ POLL_SECONDS = 0.5
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run assigned posterior jobs on one host.")
+    parser = argparse.ArgumentParser(
+        description="Run assigned posterior jobs on one host."
+    )
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--input-archive", type=Path, default=None)
     parser.add_argument("--assigned-jobs", type=Path, required=True)
