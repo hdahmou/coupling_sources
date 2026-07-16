@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from math import log
+from math import isfinite, log
 from typing import Any
 
 import jax
@@ -15,7 +15,7 @@ from numpyro.distributions import transforms
 class CouplingPriors:
     """Static namespace for coupling-model prior and parameter helpers."""
 
-    PARAMETER_SITES = ("learningRate", "g_y", "g_z", "vmConcentration")
+    PARAMETER_SITES = ("learningRate", "gamma_y", "gamma_z", "vmConcentration")
     SIMULATION_PARAMETER_SITES = (*PARAMETER_SITES, "c0")
 
     @staticmethod
@@ -25,8 +25,8 @@ class CouplingPriors:
                 dist.Normal(0.0, 1.5),
                 transforms.SigmoidTransform(),
             ),
-            "g_y": dist.LogNormal(log(8.0), 1.0),
-            "g_z": dist.LogNormal(log(8.0), 1.0),
+            "gamma_y": dist.Normal(0.0, 1.0),
+            "gamma_z": dist.Normal(0.0, 1.0),
             "vmConcentration": dist.LogNormal(log(8.0), 1.0),
         }
 
@@ -40,11 +40,21 @@ class CouplingPriors:
 
     @staticmethod
     def normalize_parameters(values: Mapping[str, Any]) -> dict[str, jax.Array]:
-        params = {
-            name: jnp.asarray(values[name], dtype=jnp.float64)
-            for name in CouplingPriors.PARAMETER_SITES
-        }
-        params["c0"] = jnp.asarray(values["c0"], dtype=jnp.float64)
+        params = {}
+        for name in CouplingPriors.SIMULATION_PARAMETER_SITES:
+            value = jnp.asarray(values[name], dtype=jnp.float64)
+            if value.ndim != 0:
+                raise ValueError(f"{name} must be a scalar")
+            scalar = float(value)
+            if not isfinite(scalar):
+                raise ValueError(f"{name} must be finite")
+            params[name] = value
+
+        learning_rate = float(params["learningRate"])
+        if not 0.0 < learning_rate < 1.0:
+            raise ValueError("learningRate must be strictly between 0 and 1")
+        if float(params["vmConcentration"]) <= 0.0:
+            raise ValueError("vmConcentration must be positive")
         return params
 
     @staticmethod

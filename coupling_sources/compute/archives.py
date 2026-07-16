@@ -9,8 +9,11 @@ def safe_extract_tar(archive_path: Path, output_dir: Path) -> None:
     output_root = output_dir.resolve()
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
-        for member in members:
-            target = (output_root / member.name).resolve()
-            if output_root != target and output_root not in target.parents:
-                raise ValueError(f"unsafe archive member path: {member.name}")
-        archive.extractall(output_root, members=members, filter="data")
+        try:
+            for member in members:
+                tarfile.data_filter(member, str(output_root))
+            archive.extractall(output_root, members=members, filter="data")
+        except tarfile.FilterError as exc:
+            raise ValueError(
+                f"unsafe archive member path: {exc.tarinfo.name}"
+            ) from exc

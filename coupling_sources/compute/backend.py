@@ -51,9 +51,6 @@ class Machine:
         if "host" not in values:
             raise ValueError("machine entries must include host")
         host = str(values["host"])
-        user = values.get("username", values.get("user"))
-        if user is not None and "@" not in host:
-            host = f"{user}@{host}"
 
         max_concurrent_fits = _config_int(
             values.get("max_concurrent_fits", 0),

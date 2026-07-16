@@ -19,7 +19,7 @@ import numpy as np
 import numpyro
 
 from coupling_sources.compute.archives import safe_extract_tar
-from coupling_sources.core.data import MCMCSpecs, StimulusSpec
+from coupling_sources.core.data import GainConstants, MCMCSpecs, StimulusSpec
 from coupling_sources.core.inference import fit_simulation, simulate_for_inference
 from coupling_sources.core.stimuli import generate_stimulus
 from coupling_sources.utils.artifacts import Artifacts
@@ -51,7 +51,7 @@ def run_assigned_jobs(
     assignment = json.loads(assigned_jobs_path.read_text())
     jobs = list(assignment["jobs"])
     worker_label = str(assignment.get("worker_label", "local"))
-    mcmc = MCMCSpecs(**assignment["mcmc"])
+    mcmc = MCMCSpecs.from_mapping(assignment["mcmc"])
     progress_bar = bool(assignment.get("progress_bar", False))
 
     print(
@@ -142,18 +142,18 @@ def _run_one_job(
             try:
                 numpyro.enable_x64(True)
                 job_config = json.loads((job_dir / "job.json").read_text())
-                stimulus_config = job_config["stimulus"]
-                stimulus_config["coupled_sources"] = tuple(
-                    stimulus_config["coupled_sources"]
+                stimuli = generate_stimulus(
+                    StimulusSpec.from_mapping(job_config["stimulus"])
                 )
-                stimuli = generate_stimulus(StimulusSpec(**stimulus_config))
                 Artifacts.write_config(job_dir / "stimuli.npz", stimuli.to_config())
 
+                gains = GainConstants.from_mapping(job_config["gain_constants"])
                 simulation_config = job_config["simulation"]
                 simulation = simulate_for_inference(
                     stimuli=stimuli,
                     simulation_parameters=simulation_config["parameters"],
                     simulation_seed=int(simulation_config["seed"]),
+                    gains=gains,
                 )
                 Artifacts.write_config(
                     job_dir / "simulation.npz",
@@ -164,6 +164,7 @@ def _run_one_job(
                 fit_result = fit_simulation(
                     simulation=simulation,
                     c0=simulation_config["parameters"]["c0"],
+                    gains=gains,
                     mcmc=mcmc,
                     progress_bar=progress_bar,
                     progress_label=job_id,

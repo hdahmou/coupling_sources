@@ -4,7 +4,9 @@ The model is the preregistered Phase-2 learning model, written one
 observe -> update -> respond step per trial. Every recorded site carries the
 symbol used in the preregistration TeX:
 
-    learningRate, g_y, g_z, vmConcentration   pooled parameters (sample sites)
+    learningRate, gamma_y, gamma_z, vmConcentration
+                       pooled parameters (sample sites)
+    ~g_y, ~g_z       gains derived in ideal-observer benchmark units
     ~a_t*            a_{ij,t}: centred relative-agreement signal
     ~c_t*            c_{ij,p,t}: pair scores after the trial-t update
     ~η^y_t*, ~η^z_t* source-level response scores (redundancy / relatedness)
@@ -31,10 +33,10 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
-from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE
-from coupling_sources.core.data import SimulationBatch
+from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
+from coupling_sources.core.data import GainConstants, SimulationBatch
 from coupling_sources.core.priors import CouplingPriors
-from coupling_sources.utils.angles import circular_mean
+from coupling_sources.utils.angles import centered_angle, circular_mean
 
 
 def _relative_agreement(
@@ -102,27 +104,41 @@ def _visible_softmax(
     weight is exactly zero and the remaining weights sum to one.
     """
 
-    return jax.nn.softmax(gain * scores + jnp.log(visible_sources), axis=-1)
+    no_visible_sources = ~jnp.any(visible_sources, axis=-1, keepdims=True)
+    fallback_source = jnp.arange(visible_sources.shape[-1]) == 0
+    safe_visible_sources = visible_sources | (no_visible_sources & fallback_source)
+    return jax.nn.softmax(
+        gain * scores + jnp.log(safe_visible_sources),
+        axis=-1,
+    )
 
 
-def model_coupling(batch: SimulationBatch, c0: float | jax.Array) -> None:
+def model_coupling(
+    batch: SimulationBatch,
+    c0: float | jax.Array,
+    gains: GainConstants,
+) -> None:
     stimuli = batch.stimuli
-    n_participants, n_rounds, n_trials, n_sources = stimuli.visible_reports.shape
+    visible_reports = jnp.asarray(stimuli.visible_reports, dtype=jnp.float64)
+    hidden_sources = jnp.asarray(stimuli.hidden_source, dtype=jnp.int32)
+    trial_types = jnp.asarray(stimuli.trial_type, dtype=jnp.int32)
+    valid_trials = jnp.asarray(stimuli.valid_trials, dtype=bool)
+    n_participants, n_rounds, n_trials, n_sources = visible_reports.shape
     off_diagonal = ~jnp.eye(n_sources, dtype=bool)
 
     priors = CouplingPriors.distributions()
-    learningRate = jnp.asarray(
-        numpyro.sample("learningRate", priors["learningRate"])
-    )
-    g_y = jnp.asarray(numpyro.sample("g_y", priors["g_y"]))
-    g_z = jnp.asarray(numpyro.sample("g_z", priors["g_z"]))
+    learningRate = jnp.asarray(numpyro.sample("learningRate", priors["learningRate"]))
+    gamma_y = jnp.asarray(numpyro.sample("gamma_y", priors["gamma_y"]))
+    gamma_z = jnp.asarray(numpyro.sample("gamma_z", priors["gamma_z"]))
+    g_y = jnp.asarray(numpyro.deterministic("~$g_y$", gamma_y * gains.g_star_y))
+    g_z = jnp.asarray(numpyro.deterministic("~$g_z$", gamma_z * gains.g_star_z))
     vmConcentration = jnp.asarray(
         numpyro.sample("vmConcentration", priors["vmConcentration"])
     )
     initial_score = jnp.asarray(
         numpyro.deterministic(
             "~$c_0$",
-            jnp.asarray(c0, dtype=stimuli.visible_reports.dtype),
+            jnp.asarray(c0, dtype=visible_reports.dtype),
         )
     )
 
@@ -135,10 +151,12 @@ def model_coupling(batch: SimulationBatch, c0: float | jax.Array) -> None:
         )
 
         for trial_index in range(n_trials):
-            reports_raw = stimuli.visible_reports[:, :, trial_index, :]
-            hidden_source = jnp.asarray(stimuli.hidden_source[:, :, trial_index])
-            valid_trial = stimuli.valid_trials[:, :, trial_index]
-            is_probe = stimuli.trial_type[:, :, trial_index] == HIDDEN_SOURCE_PROBE
+            reports_raw = visible_reports[:, :, trial_index, :]
+            hidden_source = hidden_sources[:, :, trial_index]
+            valid_trial = valid_trials[:, :, trial_index]
+            trial_type = trial_types[:, :, trial_index]
+            is_truth = trial_type == TRUTH_ESTIMATION
+            is_probe = trial_type == HIDDEN_SOURCE_PROBE
 
             # Hidden sources report NaN; visibility is read off the reports.
             visible_sources = jnp.isfinite(reports_raw)
@@ -163,8 +181,7 @@ def model_coupling(batch: SimulationBatch, c0: float | jax.Array) -> None:
             pair_scores = jnp.asarray(
                 numpyro.deterministic(
                     f"~$c_{{t={trial_index}}}$",
-                    pair_scores
-                    + update_pairs * learningRate * (a - pair_scores),
+                    pair_scores + update_pairs * learningRate * (a - pair_scores),
                 )
             )
 
@@ -209,10 +226,14 @@ def model_coupling(batch: SimulationBatch, c0: float | jax.Array) -> None:
             )
 
             # Likelihood: each valid trial contributes to exactly one branch.
-            y_mask = valid_trial & ~is_probe
+            y_mask = valid_trial & is_truth
             z_mask = valid_trial & is_probe
-            y_obs = jnp.where(y_mask, batch.truth_estimates[:, :, trial_index], 0.0)
-            z_obs = jnp.where(z_mask, batch.hidden_predictions[:, :, trial_index], 0.0)
+            y_obs = centered_angle(
+                jnp.where(y_mask, batch.truth_estimates[:, :, trial_index], 0.0)
+            )
+            z_obs = centered_angle(
+                jnp.where(z_mask, batch.hidden_predictions[:, :, trial_index], 0.0)
+            )
             with numpyro.handlers.mask(mask=y_mask):
                 numpyro.sample(
                     f"$y_{{t={trial_index}}}$",

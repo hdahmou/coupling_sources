@@ -10,7 +10,12 @@ import jax.numpy as jnp
 import numpyro.distributions as dist
 
 from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
-from coupling_sources.core.data import CouplingDiagnostics, SimulationBatch, StimulusBatch
+from coupling_sources.core.data import (
+    CouplingDiagnostics,
+    GainConstants,
+    SimulationBatch,
+    StimulusBatch,
+)
 from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.utils.angles import circular_mean
 
@@ -20,9 +25,12 @@ def simulate_coupling(
     seed: int,
     batch: StimulusBatch,
     parameters: Mapping[str, Any],
+    gains: GainConstants,
 ) -> SimulationBatch:
     """Simulate responses using parameters that include the fixed ``c0``."""
     params = CouplingPriors.normalize_parameters(parameters)
+    params["g_y"] = params["gamma_y"] * gains.g_star_y
+    params["g_z"] = params["gamma_z"] * gains.g_star_z
     response_key = jax.random.PRNGKey(seed)
 
     visible_reports = jnp.asarray(batch.visible_reports, dtype=jnp.float64)
@@ -92,7 +100,12 @@ def simulate_coupling(
         probe_source_scores = jnp.take_along_axis(pair_scores, hidden_indices, axis=-1)[..., 0]
         probe_source_scores = probe_source_scores * visible_sources.astype(pair_scores.dtype)
 
-        log_visible_sources = jnp.log(visible_sources)
+        no_visible_sources = ~jnp.any(visible_sources, axis=-1, keepdims=True)
+        fallback_source = jnp.arange(n_sources) == 0
+        safe_visible_sources = visible_sources | (
+            no_visible_sources & fallback_source
+        )
+        log_visible_sources = jnp.log(safe_visible_sources)
         truth_weights = jax.nn.softmax(truth_source_scores * params["g_y"] + log_visible_sources, axis=-1)
         probe_weights = jax.nn.softmax(probe_source_scores * params["g_z"] + log_visible_sources, axis=-1)
         truth_mean_angle = circular_mean(reports, truth_weights)

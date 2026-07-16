@@ -1,31 +1,37 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path as _Path
-
-PROJECT_ROOT = _Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import numpy as np
 
-from coupling_sources.core.data import MCMCSpecs, StimulusBatch
+from coupling_sources.core.data import GainConstants, MCMCSpecs, StimulusBatch
 from coupling_sources.core.inference import run_inference
 from coupling_sources.utils.artifacts import Artifacts
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run simulation and posterior inference for one stimulus artifact.")
-    parser.add_argument("--stimuli", type=Path, required=True, help="Stimuli .npz artifact.")
+    parser = argparse.ArgumentParser(
+        description="Run simulation and posterior inference for one stimulus artifact."
+    )
+    parser.add_argument(
+        "--stimuli",
+        type=Path,
+        required=True,
+        help="Stimuli .npz artifact.",
+    )
     parser.add_argument("--simulation-seed", type=int, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
-    parser.add_argument("--g-y", type=float, required=True)
-    parser.add_argument("--g-z", type=float, required=True)
+    parser.add_argument("--gamma-y", type=float, required=True)
+    parser.add_argument("--gamma-z", type=float, required=True)
+    parser.add_argument("--g-star-y", type=float, required=True)
+    parser.add_argument("--g-star-z", type=float, required=True)
     parser.add_argument("--vm-concentration", type=float, required=True)
     parser.add_argument("--c0", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
@@ -37,8 +43,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-tree-depth", type=int, required=True)
     parser.add_argument("--progress", action="store_true")
     parser.add_argument("--progress-label", default=None)
-    parser.add_argument("--simulation-output", type=Path, default=None, help="Optional simulation .npz artifact.")
-    parser.add_argument("--output", type=Path, required=True, help="Posterior .npz artifact.")
+    parser.add_argument(
+        "--simulation-output",
+        type=Path,
+        default=None,
+        help="Optional simulation .npz artifact.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Posterior .npz artifact.",
+    )
     return parser.parse_args(argv)
 
 
@@ -57,12 +73,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         stimuli=StimulusBatch.from_config(Artifacts.read_config(args.stimuli)),
         simulation_parameters={
             "learningRate": args.learning_rate,
-            "g_y": args.g_y,
-            "g_z": args.g_z,
+            "gamma_y": args.gamma_y,
+            "gamma_z": args.gamma_z,
             "vmConcentration": args.vm_concentration,
             "c0": args.c0,
         },
         simulation_seed=args.simulation_seed,
+        gains=GainConstants(
+            g_star_y=args.g_star_y,
+            g_star_z=args.g_star_z,
+        ),
         mcmc=mcmc,
         progress_bar=args.progress,
         progress_label=args.progress_label,
@@ -76,7 +96,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     Artifacts.write_dist_samples(args.output, result["samples"])
     Artifacts.write_mcmc_diagnostics(args.output, result["diagnostics"])
     print(
-        f"posterior {args.output}: chain_method={result['chain_method']} samples={mcmc.num_samples}",
+        f"posterior {args.output}: chain_method={result['chain_method']} "
+        f"samples={mcmc.num_samples}",
         file=sys.stderr,
     )
     return 0

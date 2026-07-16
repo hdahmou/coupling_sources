@@ -229,7 +229,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "arviz" },
-    { name = "dot2tex" },
     { name = "fabric" },
     { name = "graphviz" },
     { name = "ipykernel" },
@@ -238,9 +237,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "numpyro" },
-    { name = "pandas" },
-    { name = "scienceplots" },
-    { name = "seaborn" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -250,8 +247,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "arviz", extras = ["all"], specifier = ">=0.10.0" },
-    { name = "dot2tex", specifier = ">=2.12.0" },
+    { name = "arviz", specifier = ">=1.2.0" },
     { name = "fabric", specifier = ">=3.2.3" },
     { name = "graphviz", specifier = ">=0.21" },
     { name = "ipykernel", specifier = ">=7.3.0" },
@@ -260,9 +256,7 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "numpyro" },
-    { name = "pandas" },
-    { name = "scienceplots", specifier = ">=2.2.2" },
-    { name = "seaborn" },
+    { name = "scipy" },
 ]
 
 [package.metadata.requires-dev]
@@ -359,19 +353,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/49/85/12f0a49a7c4ffb70572b6c2ef13c90c88fd190debda93b23f026b25f9634/deprecated-1.3.1.tar.gz", hash = "sha256:b1b50e0ff0c1fddaa5708a2c6b0a6588bb09b892825ab2b214ac9ea9d92a5223", size = 2932523, upload-time = "2025-10-30T08:19:02.757Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/84/d0/205d54408c08b13550c733c4b85429e7ead111c7f0014309637425520a9a/deprecated-1.3.1-py2.py3-none-any.whl", hash = "sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f", size = 11298, upload-time = "2025-10-30T08:19:00.758Z" },
-]
-
-[[package]]
-name = "dot2tex"
-version = "2.12.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyparsing" },
-    { name = "setuptools" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/16/b6/82f6809147b300b7ea564c2b5c428afdff4f52596f3cf20f41ee52def6fd/dot2tex-2.12.0.tar.gz", hash = "sha256:11b097390b94d1a6f5072c08c50637e724e2f81b463794972c3d423005b5f536", size = 672666, upload-time = "2026-05-16T17:06:10.387Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/ff/2929e541c354e86aae529c581e7a31bcf5eb12e51817acdc8c619683f744/dot2tex-2.12.0-py3-none-any.whl", hash = "sha256:84e0de1aff0578ee91cfa0f05d8a7977370e751a9526e90859893fe6a9a90b50", size = 40171, upload-time = "2026-05-16T17:06:09.061Z" },
 ]
 
 [[package]]
@@ -1097,18 +1078,6 @@ wheels = [
 ]
 
 [[package]]
-name = "scienceplots"
-version = "2.2.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "matplotlib" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/50/05/73a19270d548caadf145b0fc8ab94a8c716faeca528c254a4192676e048b/scienceplots-2.2.2.tar.gz", hash = "sha256:d46ce7170b4160265c777a48f73a0db1fdff8460f59a0ded0e364acb139ab115", size = 19692, upload-time = "2026-06-23T07:32:50.693Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/ff/6469a5cabf230ebc94f927246874136098dde1aacc9328bc40dceb24ba13/scienceplots-2.2.2-py3-none-any.whl", hash = "sha256:f63d04e6ec11fe2036ec120feb6c2f1d84b7c38e96cc7edcde7208064653af98", size = 33394, upload-time = "2026-06-23T07:32:49.594Z" },
-]
-
-[[package]]
 name = "scipy"
 version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1137,29 +1106,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f7/86/5185061a1fcc41d18c5dc2463969b3a3964b31d9ac67b2fb05d4c7ff7670/scipy-1.18.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:9aac6192fac56bf2ca534389d24623f07b39ff83317d58287285e7fbd622ff76", size = 37472480, upload-time = "2026-06-19T15:01:35.136Z" },
     { url = "https://files.pythonhosted.org/packages/31/8e/f04c68e39919a010d34f2ee1367fd705b0a25a02f609d755f0bfbc0a15fc/scipy-1.18.0-cp314-cp314t-win_amd64.whl", hash = "sha256:e40baea28ae7f5475c779741e2d90b1247c78531207b49c7030e698ff81cee3f", size = 37365390, upload-time = "2026-06-19T15:01:38.091Z" },
     { url = "https://files.pythonhosted.org/packages/d5/19/969dc072906c84dd0a3b05dcf57ea750936087d7873549e408b35cfc3f97/scipy-1.18.0-cp314-cp314t-win_arm64.whl", hash = "sha256:368e0a705903c466aa5f08eefb39e6b1b6b2d659e7352a31fd9e2438365be0f8", size = 25279661, upload-time = "2026-06-19T15:01:40.817Z" },
-]
-
-[[package]]
-name = "seaborn"
-version = "0.13.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "matplotlib" },
-    { name = "numpy" },
-    { name = "pandas" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/86/59/a451d7420a77ab0b98f7affa3a1d78a313d2f7281a57afb1a34bae8ab412/seaborn-0.13.2.tar.gz", hash = "sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7", size = 1457696, upload-time = "2024-01-25T13:21:52.551Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/11/00d3c3dfc25ad54e731d91449895a79e4bf2384dc3ac01809010ba88f6d5/seaborn-0.13.2-py3-none-any.whl", hash = "sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987", size = 294914, upload-time = "2024-01-25T13:21:49.598Z" },
-]
-
-[[package]]
-name = "setuptools"
-version = "83.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/34/26/f5d29e25ffdb535afef2d35cdb55b325298f96debd670da4c325e08d70f4/setuptools-83.0.0.tar.gz", hash = "sha256:025bccbbf0fa05b6192bc64ae1e7b16e001fd6d6d4d5de03c97b1c1ade523bef", size = 1154254, upload-time = "2026-07-04T15:31:22.699Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl", hash = "sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3", size = 1008090, upload-time = "2026-07-04T15:31:20.885Z" },
 ]
 
 [[package]]

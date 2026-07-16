@@ -9,7 +9,8 @@
       "seed": 101,
       "n_sources": 4,
       "n_rounds": 1,
-      "resultant_floor": 0.6,
+      "resultant_floor_full": 0.6,
+      "resultant_floor_leave_one_out": 0.6,
       "coupled_sources": [
         0,
         1
@@ -19,7 +20,7 @@
       "mode": "product",
       "axes": {
         "n_participants": [
-          30
+          50
         ],
         "n_trials_full": [
           20, 40
@@ -36,13 +37,18 @@
       }
     }
   },
+  "gain_calibration": {
+    "mode": "auto",
+    "seed": 20260711,
+    "n_monte_carlo_replicates": 2000
+  },
   "simulation": {
     "seed": 201,
     "c0": 0.0
   },
   "prior": {
     "seed": 202,
-    "parameter_draws": 64
+    "parameter_draws": 48
   },
   "mcmc": {
     "seed": 103,

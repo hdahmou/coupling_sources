@@ -13,19 +13,25 @@
     "n_trials_partial": 12,
     "sigma": 0.55,
     "lam": 0.8,
-    "resultant_floor": 0.6,
+    "resultant_floor_full": 0.6,
+    "resultant_floor_leave_one_out": 0.6,
     "coupled_sources": [
       0,
       1
     ]
+  },
+  "gain_calibration": {
+    "mode": "auto",
+    "seed": 20260711,
+    "n_monte_carlo_replicates": 2000
   },
   "simulation": {
     "seed": 201,
     "c0": 0.0,
     "participant_parameters": {
       "learningRate": 0.2,
-      "g_y": 1.0,
-      "g_z": 1.0,
+      "gamma_y": 1.0,
+      "gamma_z": 1.0,
       "vmConcentration": 16.0
     }
   },

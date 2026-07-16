@@ -19,7 +19,12 @@ from coupling_sources.compute.backend import (
 from coupling_sources.core.data import MCMCSpecs
 from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.utils.artifacts import Artifacts
-from coupling_sources.workflows.job_grid import GridRun, build_run_grid, write_job_grid
+from coupling_sources.workflows.job_grid import (
+    GridRun,
+    build_run_grid,
+    write_gain_calibrations,
+    write_job_grid,
+)
 
 PARALLEL_CHAINS_PER_FIT_KEY = "parallel_chains_per_fit"
 REMOVED_HOST_DEVICE_COUNT_KEY = "host_device_count"
@@ -70,19 +75,16 @@ def _prepare_job(
     job_dir = run_dir / "jobs" / run.run_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    (job_dir / "job.json").write_text(
-        json.dumps(
-            {
-                "stimulus": asdict(run.stimuli),
-                "simulation": {
-                    "seed": simulation_seed,
-                    "parameters": run.simulation,
-                },
-            },
-            indent=2,
-        )
-        + "\n"
-    )
+    job_config: dict[str, object] = {
+        "stimulus": asdict(run.stimuli),
+        "gain_constants": asdict(run.gains),
+        "gain_calibration": run.gain_calibration,
+        "simulation": {
+            "seed": simulation_seed,
+            "parameters": run.simulation,
+        },
+    }
+    (job_dir / "job.json").write_text(json.dumps(job_config, indent=2) + "\n")
     print(f"prepared {job_dir}", file=sys.stderr)
 
     return PosteriorJob(job_id=run.run_id, job_dir=job_dir)
@@ -133,15 +135,7 @@ def run_parameter_recovery(
             simulation_config = config["simulation"]
             simulation_seed = simulation_config["seed"]
             mcmc_config = config["mcmc"]
-            mcmc = MCMCSpecs(
-                seed=int(mcmc_config["seed"]),
-                num_warmup=int(mcmc_config["num_warmup"]),
-                num_samples=int(mcmc_config["num_samples"]),
-                num_chains=int(mcmc_config["num_chains"]),
-                chain_method=str(mcmc_config["chain_method"]),
-                target_accept_prob=float(mcmc_config["target_accept_prob"]),
-                max_tree_depth=int(mcmc_config["max_tree_depth"]),
-            )
+            mcmc = MCMCSpecs.from_mapping(mcmc_config)
             parallel_chains_per_fit = _parallel_chains_per_fit(mcmc_config)
             progress_bar = bool(mcmc_config["progress_bar"])
 
@@ -152,6 +146,7 @@ def run_parameter_recovery(
             )
             Artifacts.write_dist_samples(base_job_dir / "prior.npz", prior_samples)
             write_job_grid(base_job_dir / "job_grid.csv", runs)
+            write_gain_calibrations(base_job_dir / "gain_calibrations.json", runs)
 
             posterior_jobs = [
                 _prepare_job(
