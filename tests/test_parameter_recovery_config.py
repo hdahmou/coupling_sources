@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from coupling_sources.compute.backend import ComputeConfig, _machine_env
+from coupling_sources.compute.backend import ComputeConfig, _worker_env
 from coupling_sources.core.data import MCMCSpecs
 from coupling_sources.core.gain_calibration import GainCalibration
 from coupling_sources.workflows import job_grid
@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
     ("relative_path", "expected_jobs"),
     [
         ("configs/simple_fit/default.json", 1),
-        ("configs/parameters_sweep/adam.json", 192),
+        ("configs/parameters_sweep/adam.json", 144),
     ],
 )
 def test_checked_run_configs_expand(
@@ -71,60 +71,57 @@ def test_parallel_chains_per_fit_rejects_removed_name_even_with_new_name() -> No
         )
 
 
-def test_machine_env_sets_parallel_chain_device_count() -> None:
+def test_worker_env_sets_parallel_chain_device_count() -> None:
     config = ComputeConfig.from_mapping(
         {
+            "scheduler_address": "inproc://tests",
             "env": {"XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false"},
-            "machines": [{"host": "local", "max_concurrent_fits": 1}],
         }
     )
 
-    env = _machine_env(config.machines[0], config, parallel_chains_per_fit=4)
+    env = _worker_env(config, parallel_chains_per_fit=4)
 
-    assert (
-        env["XLA_FLAGS"]
-        == "--xla_cpu_multi_thread_eigen=false --xla_force_host_platform_device_count=4"
-    )
+    assert env["JAX_NUM_CPU_DEVICES"] == "4"
+    assert env["XLA_FLAGS"] == "--xla_cpu_multi_thread_eigen=false"
 
 
-def test_machine_env_enables_persistent_compilation_cache() -> None:
-    config = ComputeConfig.from_mapping(
-        {"machines": [{"host": "local", "max_concurrent_fits": 1}]}
-    )
+def test_worker_env_enables_persistent_compilation_cache() -> None:
+    config = ComputeConfig.from_mapping({"scheduler_address": "inproc://tests"})
 
-    env = _machine_env(config.machines[0], config)
+    env = _worker_env(config)
 
     assert env["JAX_ENABLE_COMPILATION_CACHE"] == "true"
     assert env["JAX_COMPILATION_CACHE_DIR"] == ".jax_cache"
 
 
-def test_machine_env_preserves_compilation_cache_override() -> None:
+def test_worker_env_preserves_compilation_cache_override() -> None:
     config = ComputeConfig.from_mapping(
         {
+            "scheduler_address": "inproc://tests",
             "env": {"JAX_COMPILATION_CACHE_DIR": "/tmp/shared-jax-cache"},
-            "machines": [{"host": "local", "max_concurrent_fits": 1}],
         }
     )
 
-    env = _machine_env(config.machines[0], config)
+    env = _worker_env(config)
 
     assert env["JAX_COMPILATION_CACHE_DIR"] == "/tmp/shared-jax-cache"
 
 
-def test_machine_env_replaces_machine_specific_device_count() -> None:
+def test_worker_env_replaces_configured_device_count() -> None:
     config = ComputeConfig.from_mapping(
         {
-            "env": {"XLA_FLAGS": "--xla_force_host_platform_device_count=2"},
-            "machines": [
-                {
-                    "host": "local",
-                    "max_concurrent_fits": 1,
-                    "env": {"XLA_FLAGS": "--xla_force_host_platform_device_count=1"},
-                }
-            ],
+            "scheduler_address": "inproc://tests",
+            "env": {"JAX_NUM_CPU_DEVICES": "2"},
         }
     )
 
-    env = _machine_env(config.machines[0], config, parallel_chains_per_fit=4)
+    env = _worker_env(config, parallel_chains_per_fit=4)
 
-    assert env["XLA_FLAGS"] == "--xla_force_host_platform_device_count=4"
+    assert env["JAX_NUM_CPU_DEVICES"] == "4"
+
+
+def test_compute_config_requires_scheduler_address() -> None:
+    with pytest.raises(ValueError, match="scheduler_address"):
+        ComputeConfig.from_mapping({})
+    with pytest.raises(ValueError, match="scheduler_address"):
+        ComputeConfig.from_mapping({"scheduler_address": None})

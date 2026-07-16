@@ -22,7 +22,7 @@ class CouplingPriors:
     def distributions() -> dict[str, dist.Distribution]:
         return {
             "learningRate": dist.TransformedDistribution(
-                dist.Normal(0.0, 1.5),
+                dist.Normal(-2.0, 2.0),
                 transforms.SigmoidTransform(),
             ),
             "gamma_y": dist.Normal(0.0, 1.0),

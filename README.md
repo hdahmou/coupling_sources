@@ -15,14 +15,18 @@ across all tracked Python files:
 uv run pre-commit run --all-files
 ```
 
-Each machine used for SSH execution must already have a clone of this repository and a working Python environment at the configured `python` path.
-The simplest way to update code on remote machines is to run `git pull` inside each clone. If a machine cannot pull from git directly, copy only the tracked project files from your local clone with:
+Each Dask worker machine must already have a synchronized clone of this
+repository and a working Python environment. The simplest way to update code on
+remote machines is to run `git pull` inside each clone. If a machine cannot pull
+from git directly, copy only the tracked project files from your local clone
+with:
 
 ```bash
 git ls-files -z | rsync -az --from0 --files-from=- ./ hdahmou@cpu-03-01.isc.cnrs.fr:/home/hdahmou/Projects/coupling_sources/
 ```
 
-Change the SSH target and destination path to match the host's `project_path`. This does not copy ignored artifacts, local configs, virtual environments, or `.git/`.
+Change the SSH target and destination path to match the remote clone. This does
+not copy ignored artifacts, local configs, virtual environments, or `.git/`.
 
 
 ## Run Parameter Recovery
@@ -77,50 +81,70 @@ draws for that design reuse the result. The resolved constants appear in each
 `gain_calibrations.json`.
 
 ```bash
-.venv/bin/python scripts/run_parameter_recovery.py \
+coupling-sources-coordinator \
   --config configs/parameters_sweep/adam.json \
-  --compute-config configs/compute/ssh_machines.json
+  --compute-config configs/compute/dask.json
 ```
 
-If the compute config contains active remote machines, the runner asks once for the shared SSH password. Jobs are independent: the local machine prepares JSON job specifications, sends assigned inputs to each remote host over SSH, runs local process pools on those hosts, and fetches result archives when each host finishes.
+The runner connects to an externally managed Dask scheduler and submits every
+fit immediately as a separate future. Dask assigns those futures dynamically;
+the application does not divide jobs into host or submission chunks.
 
-Set `mcmc.parallel_chains_per_fit` in the run config to the number of MCMC chains that can run in parallel inside one fit. The runner applies it to worker environments as `XLA_FLAGS=--xla_force_host_platform_device_count=<N>`, which NumPyro/JAX needs when `chain_method` is `parallel`. This is separate from `max_concurrent_fits`, which controls how many independent fits run at the same time on a host.
+Set `mcmc.parallel_chains_per_fit` in the run config to the number of MCMC
+chains that can run in parallel inside one fit. The runner applies it to each
+fit subprocess as `JAX_NUM_CPU_DEVICES=<N>`, which NumPyro/JAX needs when
+`chain_method` is `parallel`. Dask worker processes and threads independently
+control how many fits run concurrently.
 
-Workers use a persistent JAX compilation cache at `.jax_cache` in each project clone. Identical model and input shapes can reuse compiled executables across worker processes and later runs on the same host. Set `JAX_COMPILATION_CACHE_DIR` in the global or per-machine `env` configuration to override the location.
+Workers use a persistent JAX compilation cache at `.jax_cache` relative to the
+worker's launch directory. Identical model and input shapes can reuse compiled
+executables across fit subprocesses and later runs on the same host. Set
+`JAX_COMPILATION_CACHE_DIR` in the compute config's optional `env` object to
+override the location.
 
-Each fit runs in a fresh spawned process. The process generates and saves `stimuli.npz`, simulates and saves `simulation.npz`, runs the posterior fit, saves `posterior.npz`, and then exits. Exiting after one job releases all JAX and LLVM mappings before another job starts while `max_concurrent_fits` still limits the number of active fits.
+Each Dask task starts one fresh Python subprocess. The subprocess generates the
+stimuli, simulates responses, fits the posterior, compresses the artifacts, and
+then exits. Exiting after one fit releases all JAX and LLVM mappings. The Dask
+task returns the compressed artifacts to the coordinator, so workers do not
+need access to a shared artifact filesystem.
 
 Artifacts are written under `artifacts/<config_name>_<YYYY_MM_DD_HH_MM_SS>/`:
 
 - `config.json`, `logs.log`, `prior.npz`, and `job_grid.csv`
 - `jobs/job_000000/job.json`, `stimuli.npz`, `simulation.npz`, `posterior.npz`, `status.json`, and `job.log`
-- temporary transfer archives under `transfer/`
 
-No Dask scheduler, dashboard, worker ports, nanny ports, or SSH tunnel script are used.
+## Dask Compute
 
-## SSH Compute Config
+Start a scheduler before running parameter recovery:
 
-Use `configs/compute/ssh_machines.json` for your private machine list. An example is `configs/compute/ssh_machines.example.json`.
+```bash
+coupling-sources-scheduler --host 0.0.0.0
+```
 
-Fields:
+Start workers from the repository root on every compute host. One worker process
+with one thread corresponds to one concurrent fit; increase `--nworkers` for
+additional fit capacity:
 
-- `host`: SSH target, optionally including the username.
-- `project_path`: absolute path to this repo clone on that machine.
-- `python`: Python executable, relative to `project_path` unless absolute.
-- `max_concurrent_fits`: number of independent posterior fits to run on that host; `0` keeps the host in the config but disables it.
-- `env`: optional environment variables, either global or per machine.
-- `connect_kwargs`: optional Fabric/Paramiko connection options. Do not put clear-text passwords here; the runner prompts at start.
+```bash
+coupling-sources-worker tcp://scheduler-host:8786 --nworkers 4 --nthreads 1
+```
 
-To run only on the current machine, use a local machine entry:
+The scheduler and worker commands delegate to Dask's native CLIs and accept the
+same options. The coordinator is the project command that prepares and submits
+parameter-recovery fits.
+
+Cluster provisioning, SSH access, ports, authentication, and TLS are external
+to this application. Every worker must use a compatible checkout and Python
+environment containing `coupling-sources` and its dependencies.
+
+The compute config only identifies the scheduler and optional environment
+variables inherited by fit subprocesses:
 
 ```json
 {
-  "python": ".venv/bin/python",
-  "machines": [
-    {
-      "host": "local",
-      "max_concurrent_fits": 4
-    }
-  ]
+  "scheduler_address": "tcp://127.0.0.1:8786",
+  "env": {
+    "JAX_COMPILATION_CACHE_DIR": ".jax_cache"
+  }
 }
 ```

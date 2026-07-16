@@ -6,16 +6,14 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from coupling_sources.workflows.parameter_recovery import run_parameter_recovery
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+def parse_coordinator_args(
+    argv: Sequence[str] | None = None,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create posterior artifact trees from a config file."
+        description="Create posterior artifact trees on a Dask cluster."
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--compute-config", type=Path, required=True)
@@ -27,22 +25,21 @@ def _raise_keyboard_interrupt(signum: int, frame: object) -> None:
     raise KeyboardInterrupt
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def coordinator_main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     try:
-        args = parse_args(argv)
+        args = parse_coordinator_args(argv)
         return run_parameter_recovery(
             config_path=args.config,
             compute_config_path=args.compute_config,
             artifacts_root=args.artifacts_root,
         )
     except KeyboardInterrupt:
-        print("parameter recovery interrupted; shutting down workers", file=sys.stderr)
+        print(
+            "parameter recovery interrupted; cancelling outstanding jobs",
+            file=sys.stderr,
+        )
         return 130
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

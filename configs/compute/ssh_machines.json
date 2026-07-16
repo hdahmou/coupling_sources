@@ -1,9 +1,0 @@
-{
-  "python": ".venv/bin/python",
-  "machines": [
-    {
-      "host": "local",
-      "max_concurrent_fits": 35
-    }
-  ]
-}

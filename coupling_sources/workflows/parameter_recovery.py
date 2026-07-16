@@ -12,8 +12,8 @@ from datetime import datetime
 from pathlib import Path
 
 from coupling_sources.compute.backend import (
+    ComputeConfig,
     PosteriorJob,
-    add_prompted_ssh_password,
     run_posterior_jobs,
 )
 from coupling_sources.core.data import MCMCSpecs
@@ -115,7 +115,7 @@ def run_parameter_recovery(
 ) -> int:
     config = json.loads(config_path.read_text())
     compute_config = json.loads(compute_config_path.read_text())
-    add_prompted_ssh_password(compute_config)
+    ComputeConfig.from_mapping(compute_config)
 
     started_at = datetime.now()
     job_config = config["job"]
@@ -158,7 +158,6 @@ def run_parameter_recovery(
 
             run_posterior_jobs(
                 compute_config=compute_config,
-                run_dir=base_job_dir,
                 jobs=posterior_jobs,
                 mcmc=mcmc,
                 parallel_chains_per_fit=parallel_chains_per_fit,

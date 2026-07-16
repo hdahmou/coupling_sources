@@ -20,19 +20,19 @@
       "mode": "product",
       "axes": {
         "n_participants": [
-          50
+          20, 40, 60
         ],
         "n_trials_full": [
-          20, 40
+          24, 36
         ],
         "n_trials_partial": [
-          20, 40
+          24, 36
         ],
         "sigma": [
-          0.5
+          0.6, 0.8
         ],
         "lam": [
-          0.8
+          0.7, 0.8, 0.9
         ]
       }
     }
@@ -40,7 +40,7 @@
   "gain_calibration": {
     "mode": "auto",
     "seed": 20260711,
-    "n_monte_carlo_replicates": 2000
+    "n_monte_carlo_replicates": 10000
   },
   "simulation": {
     "seed": 201,
@@ -48,15 +48,15 @@
   },
   "prior": {
     "seed": 202,
-    "parameter_draws": 48
+    "parameter_draws": 120
   },
   "mcmc": {
     "seed": 103,
-    "num_warmup": 200,
+    "num_warmup": 1000,
     "num_samples": 1000,
     "num_chains": 3,
     "chain_method": "sequential",
-    "target_accept_prob": 0.8,
+    "target_accept_prob": 0.9,
     "max_tree_depth": 10,
     "parallel_chains_per_fit": 1,
     "progress_bar": true
