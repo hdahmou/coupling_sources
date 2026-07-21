@@ -6,7 +6,7 @@
   },
   "stimuli": {
     "defaults": {
-      "seed": 101,
+      "seed": -1,
       "n_sources": 4,
       "n_rounds": 1,
       "resultant_floor_full": 0.6,
@@ -20,7 +20,7 @@
       "mode": "product",
       "axes": {
         "n_participants": [
-          20, 40, 60
+          10, 20, 40, 80
         ],
         "n_trials_full": [
           24, 36
@@ -39,21 +39,21 @@
   },
   "gain_calibration": {
     "mode": "auto",
-    "seed": 20260711,
+    "seed": 13,
     "n_monte_carlo_replicates": 10000
   },
   "simulation": {
-    "seed": 201,
+    "seed": 13,
     "c0": 0.0
   },
   "prior": {
-    "seed": 202,
-    "parameter_draws": 120
+    "seed": 13,
+    "parameter_draws": 256
   },
   "mcmc": {
-    "seed": 103,
-    "num_warmup": 1000,
-    "num_samples": 1000,
+    "seed": 13,
+    "num_warmup": 2000,
+    "num_samples": 2000,
     "num_chains": 3,
     "chain_method": "sequential",
     "target_accept_prob": 0.9,

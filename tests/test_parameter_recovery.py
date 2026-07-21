@@ -37,6 +37,7 @@ def test_prepare_job_writes_worker_inputs(tmp_path) -> None:
 
     job_config = json.loads((job.job_dir / "job.json").read_text())
     assert job_config["stimulus"]["coupled_sources"] == [0, 1]
+    assert job_config["stimulus"]["seed"] == 1
     assert job_config["stimulus"]["n_participants"] == 2
     assert job_config["gain_constants"] == {
         "g_star_y": 19.946,

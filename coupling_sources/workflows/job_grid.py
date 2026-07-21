@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import secrets
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,9 @@ from coupling_sources.core.gain_calibration import (
     gain_calibration_spec,
 )
 from coupling_sources.core.priors import CouplingPriors
+
+RANDOM_STIMULUS_SEED = -1
+N_STIMULUS_SEEDS = 2**32
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,30 @@ def _expand_product_config(block: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _stimulus_parameters(values: Mapping[str, Any]) -> StimulusSpec:
     return StimulusSpec.from_mapping(values)
+
+
+def _validate_stimulus_seed(seed: object) -> int:
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("stimuli.seed must be an integer")
+    if seed < RANDOM_STIMULUS_SEED or seed >= N_STIMULUS_SEEDS:
+        raise ValueError(
+            f"stimuli.seed must be {RANDOM_STIMULUS_SEED} or an unsigned 32-bit integer"
+        )
+    return seed
+
+
+def _resolve_stimulus_seed(
+    stimulus: StimulusSpec,
+    allocated_seeds: set[int],
+) -> StimulusSpec:
+    if stimulus.seed != RANDOM_STIMULUS_SEED:
+        return stimulus
+
+    while True:
+        seed = secrets.randbelow(N_STIMULUS_SEEDS)
+        if seed not in allocated_seeds:
+            allocated_seeds.add(seed)
+            return replace(stimulus, seed=seed)
 
 
 def _sample_sim_params_from_prior(
@@ -167,6 +195,8 @@ def build_run_grid(config: dict[str, Any]) -> list[GridRun]:
         _stimulus_parameters(values)
         for values in _expand_product_config(config["stimuli"])
     ]
+    stimulus_seeds = [_validate_stimulus_seed(stimulus.seed) for stimulus in stimuli]
+    allocated_seeds = {seed for seed in stimulus_seeds if seed != RANDOM_STIMULUS_SEED}
     resolved_gains = _resolve_gains(config, stimuli)
     simulation_config = config["simulation"]
     c0 = float(simulation_config["c0"])
@@ -193,7 +223,7 @@ def build_run_grid(config: dict[str, Any]) -> list[GridRun]:
     return [
         GridRun(
             f"job_{index:06d}",
-            stimulus,
+            _resolve_stimulus_seed(stimulus, allocated_seeds),
             gains.constants,
             simulation_parameters,
             gains.calibration,
