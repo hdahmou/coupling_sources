@@ -426,13 +426,16 @@ def test_run_posterior_jobs_round_trips_through_process_worker(
 
 
 class _FakeStimuli:
-    def to_config(self) -> dict[str, list[int]]:
-        return {"stimuli": [1]}
+    pass
 
 
 class _FakeSimulation:
+    pass
+
+
+class _FakeFitData:
     def to_config(self) -> dict[str, list[int]]:
-        return {"simulation": [1]}
+        return {"fit_data": [1]}
 
 
 def test_run_one_job_generates_simulates_saves_then_fits(
@@ -442,6 +445,7 @@ def test_run_one_job_generates_simulates_saves_then_fits(
     events: list[str] = []
     stimuli = _FakeStimuli()
     simulation = _FakeSimulation()
+    fit_data = _FakeFitData()
     monkeypatch.setattr(worker.numpyro, "enable_x64", lambda value: None)
 
     def fake_generate(spec: StimulusSpec) -> _FakeStimuli:
@@ -455,8 +459,13 @@ def test_run_one_job_generates_simulates_saves_then_fits(
         events.append("simulate")
         return simulation
 
+    def fake_prepare(value: _FakeSimulation) -> _FakeFitData:
+        assert value is simulation
+        events.append("prepare")
+        return fit_data
+
     def fake_fit(**kwargs: Any) -> dict[str, Any]:
-        assert kwargs["simulation"] is simulation
+        assert kwargs["fit_data"] is fit_data
         events.append("fit")
         return {
             "samples": {"sample": np.array([1.0])},
@@ -466,7 +475,8 @@ def test_run_one_job_generates_simulates_saves_then_fits(
 
     monkeypatch.setattr(worker, "generate_stimulus", fake_generate)
     monkeypatch.setattr(worker, "simulate_for_inference", fake_simulate)
-    monkeypatch.setattr(worker, "fit_simulation", fake_fit)
+    monkeypatch.setattr(worker, "prepare_simulation_for_fit", fake_prepare)
+    monkeypatch.setattr(worker, "fit_model", fake_fit)
 
     status = worker._run_one_job(
         tmp_path,
@@ -496,13 +506,16 @@ def test_run_one_job_generates_simulates_saves_then_fits(
     )
 
     assert status["ok"] is True
-    assert events == ["generate", "simulate", "fit"]
+    assert events == ["generate", "simulate", "prepare", "fit"]
     assert set(path.name for path in tmp_path.iterdir()) == {
-        "stimuli.npz",
-        "simulation.npz",
+        "fit_data.npz",
         "posterior.npz",
         "job.log",
     }
+    np.testing.assert_array_equal(
+        Artifacts.read_config(tmp_path / "fit_data.npz")["fit_data"],
+        [1],
+    )
     assert Artifacts.read_dist_samples(tmp_path / "posterior.npz")["sample"] == 1.0
     assert Artifacts.read_mcmc_diagnostics(tmp_path / "posterior.npz") == {"ok": True}
 
@@ -545,6 +558,6 @@ def test_run_one_job_returns_partial_artifacts_on_failure(
 
     assert status["ok"] is False
     assert "simulation failed" in status["error"]
-    assert (tmp_path / "stimuli.npz").exists()
     assert (tmp_path / "job.log").exists()
+    assert not (tmp_path / "fit_data.npz").exists()
     assert not (tmp_path / "posterior.npz").exists()

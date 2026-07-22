@@ -11,8 +11,9 @@ from coupling_sources.core.data import (
     SimulationBatch,
     StimulusBatch,
     StimulusMetadata,
+    prepare_simulation_for_fit,
 )
-from coupling_sources.core.inference import fit_simulation
+from coupling_sources.core.inference import fit_model
 from coupling_sources.core.model import model_coupling
 from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.core.simulator import simulate_coupling
@@ -67,11 +68,12 @@ def test_model_uses_prior_parameter_site_names() -> None:
         hidden_predictions=np.array([[[np.nan, 0.4]]]),
         responses=np.array([[[0.15, 0.4]]]),
     )
+    fit_data = prepare_simulation_for_fit(simulation)
 
     gains = GainConstants(g_star_y=19.946, g_star_z=28.121)
     trace = numpyro.handlers.trace(
         numpyro.handlers.seed(model_coupling, rng_seed=0)
-    ).get_trace(simulation, 0.25, gains)
+    ).get_trace(fit_data, 0.25, gains)
     sample_sites = {name for name, site in trace.items() if site["type"] == "sample"}
 
     parameter_sites = set(CouplingPriors.parameter_sites())
@@ -94,7 +96,7 @@ def test_model_uses_prior_parameter_site_names() -> None:
 
     graph_source = numpyro.render_model(
         model_coupling,
-        model_args=(simulation, 0.25, gains),
+        model_args=(fit_data, 0.25, gains),
         render_distributions=False,
     ).source
     assert '"~$c_0$" -> "~$c_{t=0}$"' in graph_source
@@ -139,8 +141,8 @@ def test_simulator_converts_gamma_to_effective_gains() -> None:
         -gains.g_star_z
     )
 
-    fit = fit_simulation(
-        simulation=simulation,
+    fit = fit_model(
+        fit_data=prepare_simulation_for_fit(simulation),
         c0=0.0,
         gains=gains,
         mcmc=MCMCSpecs(

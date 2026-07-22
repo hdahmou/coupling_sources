@@ -34,7 +34,7 @@ import numpyro
 import numpyro.distributions as dist
 
 from coupling_sources.core.constants import HIDDEN_SOURCE_PROBE, TRUTH_ESTIMATION
-from coupling_sources.core.data import GainConstants, SimulationBatch
+from coupling_sources.core.data import FitData, GainConstants
 from coupling_sources.core.priors import CouplingPriors
 from coupling_sources.utils.angles import centered_angle, circular_mean
 
@@ -114,15 +114,15 @@ def _visible_softmax(
 
 
 def model_coupling(
-    batch: SimulationBatch,
+    batch: FitData,
     c0: float | jax.Array,
     gains: GainConstants,
 ) -> None:
-    stimuli = batch.stimuli
-    visible_reports = jnp.asarray(stimuli.visible_reports, dtype=jnp.float64)
-    hidden_sources = jnp.asarray(stimuli.hidden_source, dtype=jnp.int32)
-    trial_types = jnp.asarray(stimuli.trial_type, dtype=jnp.int32)
-    valid_trials = jnp.asarray(stimuli.valid_trials, dtype=bool)
+    visible_reports = jnp.asarray(batch.visible_reports, dtype=jnp.float64)
+    hidden_sources = jnp.asarray(batch.hidden_source, dtype=jnp.int32)
+    trial_types = jnp.asarray(batch.trial_type, dtype=jnp.int32)
+    valid_trials = jnp.asarray(batch.valid_trials, dtype=bool)
+    responses = jnp.asarray(batch.responses, dtype=jnp.float64)
     n_participants, n_rounds, n_trials, n_sources = visible_reports.shape
     off_diagonal = ~jnp.eye(n_sources, dtype=bool)
 
@@ -228,12 +228,9 @@ def model_coupling(
             # Likelihood: each valid trial contributes to exactly one branch.
             y_mask = valid_trial & is_truth
             z_mask = valid_trial & is_probe
-            y_obs = centered_angle(
-                jnp.where(y_mask, batch.truth_estimates[:, :, trial_index], 0.0)
-            )
-            z_obs = centered_angle(
-                jnp.where(z_mask, batch.hidden_predictions[:, :, trial_index], 0.0)
-            )
+            trial_responses = responses[:, :, trial_index]
+            y_obs = centered_angle(jnp.where(y_mask, trial_responses, 0.0))
+            z_obs = centered_angle(jnp.where(z_mask, trial_responses, 0.0))
             with numpyro.handlers.mask(mask=y_mask):
                 numpyro.sample(
                     f"$y_{{t={trial_index}}}$",

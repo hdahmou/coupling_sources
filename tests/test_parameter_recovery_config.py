@@ -69,6 +69,9 @@ def test_random_stimulus_seed_is_unique_per_job_and_persisted(
     with output.open(newline="") as file:
         rows = list(csv.DictReader(file))
     assert [int(row["stimuli_seed"]) for row in rows] == [101, 202, 303]
+    assert rows[0]["fit_data_path"] == "jobs/job_000000/fit_data.npz"
+    assert "stimuli_path" not in rows[0]
+    assert "simulation_path" not in rows[0]
     job = _prepare_job(run_dir=tmp_path, run=runs[0], simulation_seed=10)
     job_config = json.loads((job.job_dir / "job.json").read_text())
     assert job_config["stimulus"]["seed"] == 101

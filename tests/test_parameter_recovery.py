@@ -55,3 +55,4 @@ def test_prepare_job_writes_worker_inputs(tmp_path) -> None:
     assert not (job.job_dir / "stimulus_parameters.json").exists()
     assert not (job.job_dir / "simulation_parameters.json").exists()
     assert not (job.job_dir / "stimuli.npz").exists()
+    assert not (job.job_dir / "fit_data.npz").exists()

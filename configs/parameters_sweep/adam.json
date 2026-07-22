@@ -59,6 +59,6 @@
     "target_accept_prob": 0.9,
     "max_tree_depth": 10,
     "parallel_chains_per_fit": 1,
-    "progress_bar": true
+    "progress_bar": false
   }
 }

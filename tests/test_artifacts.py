@@ -5,9 +5,11 @@ import pytest
 
 from coupling_sources.core.data import (
     CouplingDiagnostics,
+    FitData,
     SimulationBatch,
     StimulusBatch,
     StimulusMetadata,
+    prepare_simulation_for_fit,
 )
 from coupling_sources.utils.artifacts import Artifacts
 
@@ -139,6 +141,36 @@ def test_stimulus_and_simulation_artifacts_round_trip(tmp_path):
         loaded_simulation.diagnostics.visible_source_mask,
         simulation.diagnostics.visible_source_mask,
     )
+
+
+def test_fit_data_artifact_is_full_precision_and_round_trips_exactly(tmp_path):
+    simulation = SimulationBatch(
+        stimuli=_stimuli(),
+        truth_estimates=np.array([[[np.nan, 0.2]]], dtype=np.float64),
+        hidden_predictions=np.array([[[0.3, np.nan]]], dtype=np.float64),
+        responses=np.array([[[0.3, 0.2]]], dtype=np.float64),
+    )
+    fit_data = prepare_simulation_for_fit(simulation)
+    path = tmp_path / "fit_data.npz"
+
+    Artifacts.write_config(path, fit_data.to_config())
+    stored = Artifacts.read_config(path)
+    loaded = FitData.from_config(stored)
+
+    assert set(stored) == {
+        "visible_reports",
+        "hidden_source",
+        "trial_type",
+        "valid_trials",
+        "responses",
+    }
+    assert stored["visible_reports"].dtype == np.float64
+    assert stored["responses"].dtype == np.float64
+    for name in stored:
+        np.testing.assert_array_equal(
+            np.asarray(getattr(loaded, name)),
+            np.asarray(getattr(fit_data, name)),
+        )
 
 
 def test_artifact_paths_must_be_npz(tmp_path):

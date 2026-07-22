@@ -17,6 +17,7 @@ from coupling_sources.core.data import (
     SimulationBatch,
     StimulusBatch,
     StimulusMetadata,
+    prepare_simulation_for_fit,
 )
 from coupling_sources.core.model import model_coupling
 from coupling_sources.core.simulator import simulate_coupling
@@ -118,12 +119,13 @@ def test_model_deterministic_sites_match_simulator_diagnostics() -> None:
         parameters=parameters,
         gains=gains,
     )
+    fit_data = prepare_simulation_for_fit(simulation)
     conditioned_model = numpyro.handlers.substitute(
         model_coupling,
         data={name: parameters[name] for name in parameters if name != "c0"},
     )
     trace = numpyro.handlers.trace(conditioned_model).get_trace(
-        simulation,
+        fit_data,
         parameters["c0"],
         gains,
     )
@@ -180,7 +182,7 @@ def test_model_deterministic_sites_match_simulator_diagnostics() -> None:
     )
     log_joint, _ = log_density(
         model_coupling,
-        (simulation, parameters["c0"], gains),
+        (fit_data, parameters["c0"], gains),
         {},
         {name: parameters[name] for name in parameters if name != "c0"},
     )
@@ -288,7 +290,7 @@ def test_model_wraps_simulator_responses_to_von_mises_support() -> None:
 
     with numpyro.validation_enabled():
         trace = numpyro.handlers.trace(conditioned_model).get_trace(
-            shifted,
+            prepare_simulation_for_fit(shifted),
             parameters["c0"],
             gains,
         )

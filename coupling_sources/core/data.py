@@ -19,6 +19,70 @@ from coupling_sources.core.constants import (
 Array = jax.Array | NDArray[Any]
 
 
+def _validate_stimulus_arrays(
+    visible_reports: Array,
+    hidden_source: Array,
+    trial_type: Array,
+    valid_trials: Array,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    reports = np.asarray(visible_reports)
+    hidden_source_array = np.asarray(hidden_source)
+    trial_type_array = np.asarray(trial_type)
+    valid_trials_array = np.asarray(valid_trials, dtype=bool)
+
+    if reports.ndim != 4:
+        raise ValueError(
+            "visible_reports must have shape (participant, round, trial, source)"
+        )
+    trial_shape = reports.shape[:-1]
+    for name, values in (
+        ("hidden_source", hidden_source_array),
+        ("trial_type", trial_type_array),
+        ("valid_trials", valid_trials_array),
+    ):
+        if values.shape != trial_shape:
+            raise ValueError(f"{name} must have shape {trial_shape}")
+
+    is_truth = trial_type_array == TRUTH_ESTIMATION
+    is_probe = trial_type_array == HIDDEN_SOURCE_PROBE
+    if np.any(valid_trials_array & ~(is_truth | is_probe)):
+        raise ValueError("valid trial_type values must be truth 0 or probe 1")
+    if np.any(
+        valid_trials_array & is_truth & (hidden_source_array != NO_HIDDEN_SOURCE)
+    ):
+        raise ValueError("valid truth trials must use hidden_source=-1")
+
+    n_sources = reports.shape[-1]
+    probe_mask = valid_trials_array & is_probe
+    probe_hidden = hidden_source_array[probe_mask]
+    if np.any(
+        (probe_hidden < 0)
+        | (probe_hidden >= n_sources)
+        | (probe_hidden != np.floor(probe_hidden))
+    ):
+        raise ValueError("valid probe hidden_source values must index a source")
+
+    truth_reports = reports[valid_trials_array & is_truth]
+    if np.any(~np.isfinite(truth_reports)):
+        raise ValueError("all reports must be finite on valid truth trials")
+
+    probe_reports = reports[probe_mask]
+    if probe_reports.size:
+        hidden_indices = probe_hidden.astype(np.int64, copy=False)
+        hidden_is_nan = np.isnan(
+            probe_reports[np.arange(probe_reports.shape[0]), hidden_indices]
+        )
+        if np.any(~hidden_is_nan) or np.any(
+            np.sum(~np.isfinite(probe_reports), axis=-1) != 1
+        ):
+            raise ValueError(
+                "valid probes must contain one NaN at hidden_source and finite "
+                "reports elsewhere"
+            )
+
+    return reports, hidden_source_array, trial_type_array, valid_trials_array
+
+
 @dataclass(frozen=True)
 class GainConstants:
     g_star_y: float
@@ -144,58 +208,12 @@ class StimulusBatch:
     metadata: StimulusMetadata
 
     def __post_init__(self) -> None:
-        reports = np.asarray(self.visible_reports)
-        hidden_source = np.asarray(self.hidden_source)
-        trial_type = np.asarray(self.trial_type)
-        valid_trials = np.asarray(self.valid_trials, dtype=bool)
-
-        if reports.ndim != 4:
-            raise ValueError(
-                "visible_reports must have shape (participant, round, trial, source)"
-            )
-        trial_shape = reports.shape[:-1]
-        for name, values in (
-            ("hidden_source", hidden_source),
-            ("trial_type", trial_type),
-            ("valid_trials", valid_trials),
-        ):
-            if values.shape != trial_shape:
-                raise ValueError(f"{name} must have shape {trial_shape}")
-
-        is_truth = trial_type == TRUTH_ESTIMATION
-        is_probe = trial_type == HIDDEN_SOURCE_PROBE
-        if np.any(valid_trials & ~(is_truth | is_probe)):
-            raise ValueError("valid trial_type values must be truth 0 or probe 1")
-        if np.any(valid_trials & is_truth & (hidden_source != NO_HIDDEN_SOURCE)):
-            raise ValueError("valid truth trials must use hidden_source=-1")
-
-        n_sources = reports.shape[-1]
-        probe_mask = valid_trials & is_probe
-        probe_hidden = hidden_source[probe_mask]
-        if np.any(
-            (probe_hidden < 0)
-            | (probe_hidden >= n_sources)
-            | (probe_hidden != np.floor(probe_hidden))
-        ):
-            raise ValueError("valid probe hidden_source values must index a source")
-
-        truth_reports = reports[valid_trials & is_truth]
-        if np.any(~np.isfinite(truth_reports)):
-            raise ValueError("all reports must be finite on valid truth trials")
-
-        probe_reports = reports[probe_mask]
-        if probe_reports.size:
-            hidden_indices = probe_hidden.astype(np.int64, copy=False)
-            hidden_is_nan = np.isnan(
-                probe_reports[np.arange(probe_reports.shape[0]), hidden_indices]
-            )
-            if np.any(~hidden_is_nan) or np.any(
-                np.sum(~np.isfinite(probe_reports), axis=-1) != 1
-            ):
-                raise ValueError(
-                    "valid probes must contain one NaN at hidden_source and finite "
-                    "reports elsewhere"
-                )
+        _validate_stimulus_arrays(
+            self.visible_reports,
+            self.hidden_source,
+            self.trial_type,
+            self.valid_trials,
+        )
 
     def to_config(self) -> dict[str, Any]:
         return {
@@ -211,6 +229,44 @@ class StimulusBatch:
         values = dict(config)
         values["metadata"] = StimulusMetadata.from_config(config["metadata"])
         return cls(**values)
+
+
+@dataclass(frozen=True)
+class FitData:
+    visible_reports: Array
+    hidden_source: Array
+    trial_type: Array
+    valid_trials: Array
+    responses: Array
+
+    def __post_init__(self) -> None:
+        reports, _, _, valid_trials = _validate_stimulus_arrays(
+            self.visible_reports,
+            self.hidden_source,
+            self.trial_type,
+            self.valid_trials,
+        )
+        responses = np.asarray(self.responses)
+        trial_shape = reports.shape[:-1]
+        if responses.shape != trial_shape:
+            raise ValueError(f"responses must have shape {trial_shape}")
+        if np.any(~np.isfinite(responses[valid_trials])) or np.any(
+            ~np.isnan(responses[~valid_trials])
+        ):
+            raise ValueError("responses must be finite only on valid trials")
+
+    def to_config(self) -> dict[str, Any]:
+        return {
+            "visible_reports": self.visible_reports,
+            "hidden_source": self.hidden_source,
+            "trial_type": self.trial_type,
+            "valid_trials": self.valid_trials,
+            "responses": self.responses,
+        }
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> FitData:
+        return cls(**dict(config))
 
 
 @dataclass(frozen=True)
@@ -360,14 +416,13 @@ def prepare_stimuli_for_fit(stimuli: StimulusBatch) -> StimulusBatch:
     )
 
 
-def prepare_simulation_for_fit(simulation: SimulationBatch) -> SimulationBatch:
+def prepare_simulation_for_fit(simulation: SimulationBatch) -> FitData:
     """Return model-facing simulated observations with fit dtypes."""
-    return replace(
-        simulation,
-        stimuli=prepare_stimuli_for_fit(simulation.stimuli),
-        truth_estimates=jnp.asarray(simulation.truth_estimates, dtype=jnp.float64),
-        hidden_predictions=jnp.asarray(
-            simulation.hidden_predictions,
-            dtype=jnp.float64,
-        ),
+    stimuli = simulation.stimuli
+    return FitData(
+        visible_reports=jnp.asarray(stimuli.visible_reports, dtype=jnp.float64),
+        hidden_source=jnp.asarray(stimuli.hidden_source, dtype=jnp.int32),
+        trial_type=jnp.asarray(stimuli.trial_type, dtype=jnp.int32),
+        valid_trials=jnp.asarray(stimuli.valid_trials, dtype=bool),
+        responses=jnp.asarray(simulation.responses, dtype=jnp.float64),
     )

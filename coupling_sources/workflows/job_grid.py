@@ -239,7 +239,7 @@ def _csv_value(value: object) -> object:
 
 
 def write_job_grid(output: Path, runs: Sequence[GridRun]) -> None:
-    fieldnames = ["job_id", "stimuli_path", "simulation_path", "posterior_path"]
+    fieldnames = ["job_id", "fit_data_path", "posterior_path"]
     stimuli_names = tuple(item.name for item in fields(StimulusSpec))
     simulation_names = CouplingPriors.simulation_parameter_sites()
     fieldnames.extend(f"stimuli_{name}" for name in stimuli_names)
@@ -253,8 +253,7 @@ def write_job_grid(output: Path, runs: Sequence[GridRun]) -> None:
             job_path = Path("jobs") / run.run_id
             row: dict[str, object] = {
                 "job_id": run.run_id,
-                "stimuli_path": str(job_path / "stimuli.npz"),
-                "simulation_path": str(job_path / "simulation.npz"),
+                "fit_data_path": str(job_path / "fit_data.npz"),
                 "posterior_path": str(job_path / "posterior.npz"),
             }
             row.update(

@@ -14,17 +14,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import numpyro
 
-from coupling_sources.core.data import GainConstants, MCMCSpecs, StimulusSpec
-from coupling_sources.core.inference import fit_simulation, simulate_for_inference
+from coupling_sources.core.data import (
+    GainConstants,
+    MCMCSpecs,
+    StimulusSpec,
+    prepare_simulation_for_fit,
+)
+from coupling_sources.core.inference import fit_model, simulate_for_inference
 from coupling_sources.core.stimuli import generate_stimulus
 from coupling_sources.utils.artifacts import Artifacts
 
 ARTIFACT_NAMES = (
-    "stimuli.npz",
-    "simulation.npz",
+    "fit_data.npz",
     "posterior.npz",
     "job.log",
 )
@@ -170,7 +173,6 @@ def _run_one_job(
                 stimuli = generate_stimulus(
                     StimulusSpec.from_mapping(job_config["stimulus"])
                 )
-                Artifacts.write_config(output_dir / "stimuli.npz", stimuli.to_config())
 
                 gains = GainConstants.from_mapping(job_config["gain_constants"])
                 simulation_config = job_config["simulation"]
@@ -180,14 +182,14 @@ def _run_one_job(
                     simulation_seed=int(simulation_config["seed"]),
                     gains=gains,
                 )
+                fit_data = prepare_simulation_for_fit(simulation)
                 Artifacts.write_config(
-                    output_dir / "simulation.npz",
-                    simulation.to_config(),
-                    float_dtype=np.float16,
+                    output_dir / "fit_data.npz",
+                    fit_data.to_config(),
                 )
 
-                fit_result = fit_simulation(
-                    simulation=simulation,
+                fit_result = fit_model(
+                    fit_data=fit_data,
                     c0=simulation_config["parameters"]["c0"],
                     gains=gains,
                     mcmc=mcmc,
